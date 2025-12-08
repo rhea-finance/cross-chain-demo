@@ -1,0 +1,211 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: #ffffff;
+  --foreground: #ffffff;
+  --modal-z-index: 100000 !important;
+}
+
+:host {
+  --modal-z-index: 100000;
+}
+@font-face {
+  font-family: "JostLight";
+  src: url("../../public/rheaFonts/Jost-300-Light.ttf");
+}
+@font-face {
+  font-family: "JostBold";
+  src: url("../../public/rheaFonts/Jost-700-Bold.ttf");
+}
+@font-face {
+  font-family: "JostBook";
+  src: url("../../public/rheaFonts/Jost-400-Book.ttf");
+}
+
+/* font */
+.paceGrotesk-Bold {
+  font-family: "JostBold";
+}
+
+.paceGrotesk-Book {
+  font-family: "JostBook";
+}
+
+.paceGrotesk-Light {
+  font-family: "JostLight";
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: "JostBook";
+}
+
+/* Remove default focus outline for all elements */
+* {
+  outline: none !important;
+}
+
+*:focus {
+  outline: none !important;
+}
+
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+  border-radius: 2px;
+}
+
+::-webkit-scrollbar-track {
+  box-shadow: inset 0 0 6px rgba(0, 0, 0, 0);
+  background: rgba(33, 43, 53, 0.9);
+  background: rgba(33, 43, 53, 0.1);
+  border-radius: 2px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.5);
+  border-radius: 2px;
+}
+
+.loading-dots {
+  display: inline-block;
+  margin-left: 0.5rem;
+  font-size: 1rem;
+}
+
+.loading-dots::after {
+  content: "...";
+  animation: fadeInOut 1s infinite;
+}
+
+/* range start */
+input[type="range"] {
+  display: block;
+  appearance: none;
+  -webkit-appearance: none;
+  background: rgba(63, 65, 71, 0.21);
+  height: 10px;
+  border-radius: 6px;
+  /* border: 1px solid #303037; */
+  margin: 0 auto;
+  outline: none;
+  background-image: linear-gradient(#00f7a5, #00f7a5);
+  background-size: 0% 100%;
+  background-repeat: no-repeat;
+}
+input[type="range"]::-webkit-slider-runnable-track {
+  -webkit-appearance: none;
+  box-shadow: none;
+  border: none;
+  background: transparent;
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  background-color: #00f7a5;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  cursor: pointer;
+  box-shadow: 0px 0px 10px rgba(0, 0, 0, 0.25);
+  border: 1px solid #ffffff;
+}
+
+.greenInput[type="range"] {
+  background-image: linear-gradient(#00f7a5, #00f7a5);
+}
+
+.greenInput[type="range"]::-webkit-slider-thumb {
+  background-color: #00f7a5;
+}
+
+.orangeInput[type="range"] {
+  background-image: linear-gradient(#ff5f2a, #ff5f2a);
+}
+
+.orangeInput[type="range"]::-webkit-slider-thumb {
+  background-color: #ff5f2a;
+}
+/* range end */
+
+.animate-waiting {
+  animation: animate-waiting 3s ease-in-out infinite;
+}
+@keyframes animate-waiting {
+  0% {
+    transform: rotate(0deg);
+  }
+  60% {
+    transform: rotate(360deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+.animate-polling {
+  animation: animate-polling 1s linear infinite;
+}
+@keyframes animate-polling {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+/* input */
+input::-webkit-outer-spin-button,
+input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+  border-radius: 2px;
+}
+
+::-webkit-scrollbar-track {
+  box-shadow: inset 0 0 6px rgba(0, 0, 0, 0);
+  background: rgba(33, 43, 53, 0.1);
+  background: rgba(33, 43, 53, 0.1);
+  border-radius: 2px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #2d3a45;
+  border-radius: 2px;
+}
+
+.classAddLiqThumb::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 1px;
+}
+
+input {
+  margin: 0;
+  background-color: transparent;
+  display: block;
+  width: 100%;
+  padding: 0;
+  border-width: 0;
+}
+
+input:focus {
+  outline: none;
+  border-width: 0;
+}
+
+input::-webkit-outer-spin-button,
+input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+input[type="number"] {
+  -moz-appearance: textfield; /* Firefox */
+}
