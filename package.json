@@ -13,10 +13,11 @@
   },
   "dependencies": {
     "@binance/w3w-blocknative-connector": "1.1.9",
+    "@certusone/wormhole-sdk": "^0.10.18",
     "@heroui/react": "2.7.11",
     "@iconify/react": "6.0.0",
     "@reduxjs/toolkit": "2.8.2",
-    "@rhea-finance/cross-chain-sdk": "0.1.3",
+    "@rhea-finance/cross-chain-sdk": "0.1.5",
     "@sentry/react": "9.38.0",
     "@solana/spl-token": "0.4.13",
     "@solana/wallet-adapter-react": "0.15.39",

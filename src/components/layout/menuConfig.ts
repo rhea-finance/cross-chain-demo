@@ -10,6 +10,11 @@ export const MENU_ITEMS: MenuItem[] = [
     path: "/",
     paths: ["/", "/index", "/tokenDetail/"],
   },
+  {
+    label: "LSD",
+    path: "/lsd",
+    paths: ["/lsd"],
+  },
 ];
 
 export function isMenuActive(pathname: string, menuItem: MenuItem): boolean {
