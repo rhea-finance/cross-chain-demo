@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useMemo } from "react";
+import { Icon } from "@iconify/react";
 import useWalletConnect from "@/hooks/useWalletConnect";
 import { get_balance_evm } from "@/services/chains/evm";
 import { Img } from "@/components/common/img";
@@ -6,6 +7,7 @@ import {
   formatErrorMessage,
   getAccountIdUi,
   parseAmount,
+  formatAmount,
 } from "@/utils/chainsUtil";
 import { EVM_CHAINS } from "@/services/chainConfig";
 import {
@@ -26,6 +28,7 @@ import { intentsQuotationUi } from "@/services/lending/actions/commonAction";
 import { transfer_evm } from "@/services/chains/evm";
 import { pollingTransactionStatus } from "@rhea-finance/cross-chain-sdk";
 import failToast from "@/components/common/toast/failToast";
+import Big from "big.js";
 
 const LSDPage = () => {
   const { evm } = useWalletConnect();
@@ -33,12 +36,33 @@ const LSDPage = () => {
   const [withdrawAmount, setWithdrawAmount] = useState("0.0");
   const [estReceive, setEstReceive] = useState("0");
   const [estCost, setEstCost] = useState("0");
+  const [estReceiveUsdt, setEstReceiveUsdt] = useState("0");
+  const [supplyQuoteError, setSupplyQuoteError] = useState<string | null>(null);
+  const [isSupplyQuoteLoading, setIsSupplyQuoteLoading] = useState(false);
+  const [supplyQuoteResult, setSupplyQuoteResult] = useState<string | null>(
+    null
+  );
+  const [withdrawQuoteError, setWithdrawQuoteError] = useState<string | null>(
+    null
+  );
+  const [isWithdrawQuoteLoading, setIsWithdrawQuoteLoading] = useState(false);
   const [bscUsdtBalance, setBscUsdtBalance] = useState("0");
   const [bscLsdUsdtBalance, setBscLsdUsdtBalance] = useState("0");
   const [isSupplying, setIsSupplying] = useState(false);
   const [isWithdrawing, setIsWithdrawing] = useState(false);
 
   const bscAccountId = evm.accountId;
+
+  // Calculate withdraw amount with buffer (0.9999 for fees) in raw format
+  const withdrawAmountWithBufferRaw = useMemo(() => {
+    if (!withdrawAmount || parseFloat(withdrawAmount) <= 0) {
+      return "0";
+    }
+    return parseAmount(
+      new Big(withdrawAmount || 0).mul(0.9999).toFixed(),
+      NEAR_USDT_DECIMALS
+    );
+  }, [withdrawAmount]);
 
   // Auto switch to BSC chain when EVM wallet is connected
   useEffect(() => {
@@ -103,16 +127,78 @@ const LSDPage = () => {
     return () => clearInterval(interval);
   }, [bscAccountId, fetchBalances]);
 
-  // Calculate estimated lsdUSDT for supply
+  // Try to get Intents quote for supply amount
   useEffect(() => {
-    if (!supplyAmount || parseFloat(supplyAmount) <= 0) {
+    if (!bscAccountId || !supplyAmount || parseFloat(supplyAmount) <= 0) {
+      setSupplyQuoteResult(null);
+      setSupplyQuoteError(null);
+      setIsSupplyQuoteLoading(false);
+      return;
+    }
+
+    const tryQuote = async () => {
+      try {
+        setIsSupplyQuoteLoading(true);
+        setSupplyQuoteError(null);
+        const customRecipientMsg = await createLsdSupplyRecipientMsg(
+          bscAccountId
+        );
+        const quoteResult = await intentsQuotationUi({
+          chain: "evm",
+          symbol: "USDT",
+          selectedEvmChain: "BSC",
+          amount: parseAmount(supplyAmount, BSC_USDT_DECIMALS),
+          refundTo: bscAccountId,
+          recipient: LSD_CONTRACT_ID,
+          outChainToNearChain: true,
+          customRecipientMsg,
+        });
+
+        if (
+          quoteResult?.quoteStatus !== "success" ||
+          !quoteResult?.quoteSuccessResult?.quote
+        ) {
+          const errorMessage =
+            quoteResult?.message || "Failed to get Intents quote for supply";
+          setSupplyQuoteError(errorMessage);
+          setSupplyQuoteResult(null);
+          return;
+        }
+
+        // Get amountOut from quote result
+        const amountOutFormatted =
+          quoteResult.quoteSuccessResult.quote.amountOutFormatted;
+        if (amountOutFormatted) {
+          setSupplyQuoteResult(new Big(amountOutFormatted).toFixed());
+        } else {
+          setSupplyQuoteResult(null);
+        }
+      } catch (error) {
+        console.error("Failed to get supply quote:", error);
+        const errorMessage =
+          error instanceof Error ? error.message : "Failed to get quote";
+        setSupplyQuoteError(errorMessage);
+        setSupplyQuoteResult(null);
+      } finally {
+        setIsSupplyQuoteLoading(false);
+      }
+    };
+
+    // Add debounce to avoid too many requests
+    const timeoutId = setTimeout(tryQuote, 500);
+    return () => clearTimeout(timeoutId);
+  }, [supplyAmount, bscAccountId]);
+
+  // Calculate estimated lsdUSDT for supply based on quote result
+  useEffect(() => {
+    if (!supplyQuoteResult || parseFloat(supplyQuoteResult) <= 0) {
       setEstReceive("0");
       return;
     }
 
     const calculateRequired = async () => {
       try {
-        const lsdAmount = await calculateLsdFromUsdt(supplyAmount);
+        const lsdAmount = await calculateLsdFromUsdt(supplyQuoteResult);
         setEstReceive(formatLsdAmount(lsdAmount));
       } catch (error) {
         console.error("Failed to calculate estimated lsd:", error);
@@ -121,7 +207,7 @@ const LSDPage = () => {
     };
 
     calculateRequired();
-  }, [supplyAmount]);
+  }, [supplyQuoteResult]);
 
   // Calculate required lsdUSDT for withdraw
   useEffect(() => {
@@ -142,6 +228,64 @@ const LSDPage = () => {
 
     calculateRequired();
   }, [withdrawAmount]);
+
+  // Try to get Intents quote for withdraw amount
+  useEffect(() => {
+    if (!bscAccountId || !withdrawAmount || parseFloat(withdrawAmount) <= 0) {
+      setEstReceiveUsdt("0");
+      setWithdrawQuoteError(null);
+      setIsWithdrawQuoteLoading(false);
+      return;
+    }
+
+    const tryQuote = async () => {
+      try {
+        setIsWithdrawQuoteLoading(true);
+        setWithdrawQuoteError(null);
+        const quoteResult = await intentsQuotationUi({
+          chain: "evm",
+          symbol: "USDT",
+          selectedEvmChain: "BSC",
+          amount: withdrawAmountWithBufferRaw,
+          refundTo: LSD_CONTRACT_ID,
+          recipient: bscAccountId,
+          outChainToNearChain: false,
+        });
+
+        if (
+          quoteResult?.quoteStatus !== "success" ||
+          !quoteResult?.quoteSuccessResult?.quote
+        ) {
+          const errorMessage =
+            quoteResult?.message || "Failed to get Intents quote for withdraw";
+          setWithdrawQuoteError(errorMessage);
+          setEstReceiveUsdt("0");
+          return;
+        }
+
+        // Get amountOut from quote result
+        const amountOutFormatted =
+          quoteResult.quoteSuccessResult.quote.amountOutFormatted;
+        if (amountOutFormatted) {
+          setEstReceiveUsdt(new Big(amountOutFormatted).toFixed());
+        } else {
+          setEstReceiveUsdt("0");
+        }
+      } catch (error) {
+        console.error("Failed to get withdraw quote:", error);
+        const errorMessage =
+          error instanceof Error ? error.message : "Failed to get quote";
+        setWithdrawQuoteError(errorMessage);
+        setEstReceiveUsdt("0");
+      } finally {
+        setIsWithdrawQuoteLoading(false);
+      }
+    };
+
+    // Add debounce to avoid too many requests
+    const timeoutId = setTimeout(tryQuote, 500);
+    return () => clearTimeout(timeoutId);
+  }, [withdrawAmountWithBufferRaw, bscAccountId]);
 
   // Handle Supply USDT
   const handleSupply = async () => {
@@ -240,10 +384,7 @@ const LSDPage = () => {
         chain: "evm",
         symbol: "USDT",
         selectedEvmChain: "BSC",
-        amount: parseAmount(
-          String(parseFloat(withdrawAmount) * 0.9999),
-          NEAR_USDT_DECIMALS
-        ), // buffer for fees
+        amount: withdrawAmountWithBufferRaw,
         refundTo: LSD_CONTRACT_ID,
         recipient: bscAccountId,
         outChainToNearChain: false,
@@ -377,8 +518,20 @@ const LSDPage = () => {
             </div>
             <div className="flex items-center justify-between text-sm">
               <span className="text-gray-50">Est. Receive lsdUSDT</span>
-              <span className="text-black font-medium">{estReceive}</span>
+              <span className="text-black font-medium flex items-center gap-2">
+                {isSupplyQuoteLoading ? (
+                  <Icon
+                    icon="svg-spinners:ring-resize"
+                    className="w-4 h-4 animate-spin"
+                  />
+                ) : (
+                  estReceive
+                )}
+              </span>
             </div>
+            {supplyQuoteError && (
+              <div className="text-sm text-red-500">{supplyQuoteError}</div>
+            )}
             <button
               className="w-full bg-green-10 text-black font-semibold py-3 rounded-lg hover:bg-green-30 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               onClick={handleSupply}
@@ -386,7 +539,8 @@ const LSDPage = () => {
                 !bscAccountId ||
                 !supplyAmount ||
                 parseFloat(supplyAmount) <= 0 ||
-                isSupplying
+                isSupplying ||
+                isSupplyQuoteLoading
               }
             >
               {isSupplying ? "Supplying..." : "Supply"}
@@ -411,9 +565,25 @@ const LSDPage = () => {
               />
             </div>
             <div className="flex items-center justify-between text-sm">
+              <span className="text-gray-50">Est. Receive USDT</span>
+              <span className="text-black font-medium flex items-center gap-2">
+                {isWithdrawQuoteLoading ? (
+                  <Icon
+                    icon="svg-spinners:ring-resize"
+                    className="w-4 h-4 animate-spin"
+                  />
+                ) : (
+                  estReceiveUsdt
+                )}
+              </span>
+            </div>
+            <div className="flex items-center justify-between text-sm">
               <span className="text-gray-50">Est. Cost lsdUSDT</span>
               <span className="text-black font-medium">{estCost}</span>
             </div>
+            {withdrawQuoteError && (
+              <div className="text-sm text-red-500">{withdrawQuoteError}</div>
+            )}
             <button
               className="w-full bg-red-10 text-white font-semibold py-3 rounded-lg hover:bg-red-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               onClick={handleWithdraw}
@@ -421,7 +591,8 @@ const LSDPage = () => {
                 !bscAccountId ||
                 !withdrawAmount ||
                 parseFloat(withdrawAmount) <= 0 ||
-                isWithdrawing
+                isWithdrawing ||
+                isWithdrawQuoteLoading
               }
             >
               {isWithdrawing ? "Withdrawing..." : "Withdraw"}

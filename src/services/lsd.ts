@@ -92,6 +92,30 @@ export async function calculateLsdFromUsdt(
   return lsdAmount;
 }
 
+// Calculate USDT amount from lsdUSDT amount (inverse of calculateLsdFromUsdt)
+export async function calculateUsdtFromLsd(lsdAmount: string): Promise<string> {
+  const [metadata, totalSupply, asset] = await Promise.all([
+    queryLsdMetadata(),
+    queryLsdTotalSupply(),
+    queryBurrowAsset(NEAR_USDT_ADDRESS),
+  ]);
+
+  const lsdAmountRaw = parseAmount(lsdAmount, LSD_USDT_DECIMALS);
+
+  // Reverse the calculation: BA = lsdAmount * underlying_burrowland_shares / totalSupply
+  const BA = safeBig(lsdAmountRaw)
+    .mul(metadata.underlying_burrowland_shares)
+    .div(totalSupply);
+
+  // Reverse to get USDT raw amount: usdtAmountRaw = BA * asset.supplied.balance / asset.supplied.shares
+  const usdtAmountRaw = BA.mul(asset.supplied.balance)
+    .div(asset.supplied.shares)
+    .toFixed(0, Big.roundDown);
+
+  // Format the USDT amount
+  return formatAmount(usdtAmountRaw, BSC_USDT_DECIMALS);
+}
+
 // Format lsd amount for display
 export function formatLsdAmount(lsdAmount: string): string {
   return formatAmount(lsdAmount, LSD_USDT_DECIMALS);
