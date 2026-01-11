@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { Icon } from "@iconify/react";
+import Decimal from "decimal.js";
 import useWalletConnect from "@/hooks/useWalletConnect";
 import { get_balance_evm } from "@/services/chains/evm";
 import { Img } from "@/components/common/img";
@@ -29,6 +30,7 @@ import { transfer_evm } from "@/services/chains/evm";
 import { pollingTransactionStatus } from "@rhea-finance/cross-chain-sdk";
 import failToast from "@/components/common/toast/failToast";
 import Big from "big.js";
+import { beautifyNumber } from "@/utils/beautifyNumber";
 
 const LSDPage = () => {
   const { evm } = useWalletConnect();
@@ -42,14 +44,21 @@ const LSDPage = () => {
   const [supplyQuoteResult, setSupplyQuoteResult] = useState<string | null>(
     null
   );
+  const [supplyBridgeFee, setSupplyBridgeFee] = useState<string | null>(null);
   const [withdrawQuoteError, setWithdrawQuoteError] = useState<string | null>(
     null
   );
   const [isWithdrawQuoteLoading, setIsWithdrawQuoteLoading] = useState(false);
   const [bscUsdtBalance, setBscUsdtBalance] = useState("0");
   const [bscLsdUsdtBalance, setBscLsdUsdtBalance] = useState("0");
+  const [withdrawBridgeFee, setWithdrawBridgeFee] = useState<string | null>(
+    null
+  );
   const [isSupplying, setIsSupplying] = useState(false);
   const [isWithdrawing, setIsWithdrawing] = useState(false);
+  const [isCalculatingLsd, setIsCalculatingLsd] = useState(false);
+  const [isCalculatingWithdrawLsd, setIsCalculatingWithdrawLsd] =
+    useState(false);
 
   const bscAccountId = evm.accountId;
 
@@ -132,6 +141,7 @@ const LSDPage = () => {
     if (!bscAccountId || !supplyAmount || parseFloat(supplyAmount) <= 0) {
       setSupplyQuoteResult(null);
       setSupplyQuoteError(null);
+      setSupplyBridgeFee(null);
       setIsSupplyQuoteLoading(false);
       return;
     }
@@ -166,12 +176,24 @@ const LSDPage = () => {
         }
 
         // Get amountOut from quote result
-        const amountOutFormatted =
-          quoteResult.quoteSuccessResult.quote.amountOutFormatted;
+        const { amountOutFormatted, amountOutUsd, amountInUsd } =
+          quoteResult.quoteSuccessResult.quote;
+
         if (amountOutFormatted) {
           setSupplyQuoteResult(new Big(amountOutFormatted).toFixed());
         } else {
           setSupplyQuoteResult(null);
+        }
+
+        // Calculate Bridge Fee
+        if (amountOutUsd && amountInUsd) {
+          let fee = new Decimal(amountInUsd).minus(new Decimal(amountOutUsd));
+          if (fee.isNegative()) {
+            fee = new Decimal(0);
+          }
+          setSupplyBridgeFee(fee.toFixed());
+        } else {
+          setSupplyBridgeFee(null);
         }
       } catch (error) {
         console.error("Failed to get supply quote:", error);
@@ -198,11 +220,14 @@ const LSDPage = () => {
 
     const calculateRequired = async () => {
       try {
+        setIsCalculatingLsd(true);
         const lsdAmount = await calculateLsdFromUsdt(supplyQuoteResult);
         setEstReceive(formatLsdAmount(lsdAmount));
       } catch (error) {
         console.error("Failed to calculate estimated lsd:", error);
         setEstReceive("0");
+      } finally {
+        setIsCalculatingLsd(false);
       }
     };
 
@@ -218,11 +243,14 @@ const LSDPage = () => {
 
     const calculateRequired = async () => {
       try {
+        setIsCalculatingWithdrawLsd(true);
         const lsdAmount = await calculateLsdFromUsdt(withdrawAmount);
         setEstCost(formatLsdAmount(lsdAmount));
       } catch (error) {
         console.error("Failed to calculate required lsd:", error);
         setEstCost("0");
+      } finally {
+        setIsCalculatingWithdrawLsd(false);
       }
     };
 
@@ -234,6 +262,7 @@ const LSDPage = () => {
     if (!bscAccountId || !withdrawAmount || parseFloat(withdrawAmount) <= 0) {
       setEstReceiveUsdt("0");
       setWithdrawQuoteError(null);
+      setWithdrawBridgeFee(null);
       setIsWithdrawQuoteLoading(false);
       return;
     }
@@ -260,16 +289,29 @@ const LSDPage = () => {
             quoteResult?.message || "Failed to get Intents quote for withdraw";
           setWithdrawQuoteError(errorMessage);
           setEstReceiveUsdt("0");
+          setWithdrawBridgeFee(null);
           return;
         }
 
         // Get amountOut from quote result
-        const amountOutFormatted =
-          quoteResult.quoteSuccessResult.quote.amountOutFormatted;
+        const { amountOutFormatted, amountOutUsd, amountInUsd } =
+          quoteResult.quoteSuccessResult.quote;
+
         if (amountOutFormatted) {
           setEstReceiveUsdt(new Big(amountOutFormatted).toFixed());
         } else {
           setEstReceiveUsdt("0");
+        }
+
+        // Calculate Bridge Fee
+        if (amountOutUsd && amountInUsd) {
+          let fee = new Decimal(amountInUsd).minus(new Decimal(amountOutUsd));
+          if (fee.isNegative()) {
+            fee = new Decimal(0);
+          }
+          setWithdrawBridgeFee(fee.toFixed());
+        } else {
+          setWithdrawBridgeFee(null);
         }
       } catch (error) {
         console.error("Failed to get withdraw quote:", error);
@@ -519,7 +561,7 @@ const LSDPage = () => {
             <div className="flex items-center justify-between text-sm">
               <span className="text-gray-50">Est. Receive lsdUSDT</span>
               <span className="text-black font-medium flex items-center gap-2">
-                {isSupplyQuoteLoading ? (
+                {isSupplyQuoteLoading || isCalculatingLsd ? (
                   <Icon
                     icon="svg-spinners:ring-resize"
                     className="w-4 h-4 animate-spin"
@@ -527,6 +569,15 @@ const LSDPage = () => {
                 ) : (
                   estReceive
                 )}
+              </span>
+            </div>
+            <div className="flex items-center justify-between text-sm">
+              <span className="text-gray-50">Bridge Fee</span>
+              <span className="text-black font-medium">
+                {beautifyNumber({
+                  num: supplyBridgeFee,
+                  isUsd: true,
+                }) ?? "-"}
               </span>
             </div>
             {supplyQuoteError && (
@@ -540,7 +591,8 @@ const LSDPage = () => {
                 !supplyAmount ||
                 parseFloat(supplyAmount) <= 0 ||
                 isSupplying ||
-                isSupplyQuoteLoading
+                isSupplyQuoteLoading ||
+                isCalculatingLsd
               }
             >
               {isSupplying ? "Supplying..." : "Supply"}
@@ -579,7 +631,25 @@ const LSDPage = () => {
             </div>
             <div className="flex items-center justify-between text-sm">
               <span className="text-gray-50">Est. Cost lsdUSDT</span>
-              <span className="text-black font-medium">{estCost}</span>
+              <span className="text-black font-medium">
+                {isCalculatingWithdrawLsd ? (
+                  <Icon
+                    icon="svg-spinners:ring-resize"
+                    className="w-4 h-4 animate-spin"
+                  />
+                ) : (
+                  estCost
+                )}
+              </span>
+            </div>
+            <div className="flex items-center justify-between text-sm">
+              <span className="text-gray-50">Bridge Fee</span>
+              <span className="text-black font-medium">
+                {beautifyNumber({
+                  num: withdrawBridgeFee,
+                  isUsd: true,
+                }) ?? "-"}
+              </span>
             </div>
             {withdrawQuoteError && (
               <div className="text-sm text-red-500">{withdrawQuoteError}</div>
@@ -592,7 +662,8 @@ const LSDPage = () => {
                 !withdrawAmount ||
                 parseFloat(withdrawAmount) <= 0 ||
                 isWithdrawing ||
-                isWithdrawQuoteLoading
+                isWithdrawQuoteLoading ||
+                isCalculatingWithdrawLsd
               }
             >
               {isWithdrawing ? "Withdrawing..." : "Withdraw"}
