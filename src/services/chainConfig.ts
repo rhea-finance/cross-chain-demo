@@ -313,6 +313,28 @@ export const INTENTS_TOKENS: IIntentsTokens = {
       },
     },
   },
+  NRUSDT: {
+    near: {
+      assetId: "xxxxxxx",
+      decimals: 6,
+      blockchain: "near",
+      symbol: "nrUsdt",
+      price: 1,
+      priceUpdatedAt: "2025-10-25T00:23:30.120Z",
+      contractAddress: "lsd-usdt.rhealab.near",
+    },
+    evm: {
+      BSC: {
+        assetId: "xxxxxxxxx",
+        decimals: 18,
+        blockchain: "bsc",
+        symbol: "nrUsdt",
+        price: 1,
+        priceUpdatedAt: "2025-10-25T00:23:30.120Z",
+        contractAddress: "0x5382555840ef9f54ef6d3ee5da60f12bcabf4b87",
+      },
+    },
+  },
 };
 /** asset on chain config start */
 export const ASSETS_CHAINS_EVM = [

@@ -1,5 +1,5 @@
 import React from "react";
-import LSDPage from "../components/lsd";
+import LSDPage from "../components/lsd/goWormhole";
 
 const LSD = () => {
   return <LSDPage />;

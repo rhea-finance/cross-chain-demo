@@ -7,14 +7,20 @@ import { ethers } from "ethers";
 // BSC chain config
 export const BSC_CHAIN_ID = "0x38"; // BSC mainnet chainId
 export const BSC_USDT_ADDRESS = "0x55d398326f99059fF775485246999027B3197955";
+// stg
+// export const BSC_LSD_USDT_ADDRESS =
+//   "0xc350bafb46813dd23fd298c1caef96da4a4c1f2a";
+// prd
 export const BSC_LSD_USDT_ADDRESS =
-  "0xc350bafb46813dd23fd298c1caef96da4a4c1f2a";
+  "0x5382555840ef9f54ef6d3ee5da60f12bcabf4b87";
 export const BSC_USDT_DECIMALS = 18;
 export const LSD_USDT_DECIMALS = 18;
 
 // NEAR config
-export const LSD_CONTRACT_ID = "lsd.stg.ref-dev-team.near";
-export const BURROW_CONTRACT_ID = "br.private-mainnet.ref-dev-team.near";
+// export const LSD_CONTRACT_ID = "lsd.stg.ref-dev-team.near"; // stg
+export const LSD_CONTRACT_ID = "lsd-usdt.rhealab.near"; // prd
+// export const BURROW_CONTRACT_ID = "br.private-mainnet.ref-dev-team.near"; // stg
+export const BURROW_CONTRACT_ID = "contract.main.burrow.near"; // prd
 export const NEAR_USDT_ADDRESS = "usdt.tether-token.near";
 export const NEAR_USDT_DECIMALS = 6;
 
@@ -71,7 +77,7 @@ export async function queryBurrowAsset(tokenId: string): Promise<BurrowAsset> {
 
 // Calculate required lsdUSDT for withdraw
 export async function calculateLsdFromUsdt(
-  usdtAmount: string
+  usdtAmount: string // readable amount
 ): Promise<string> {
   const [metadata, totalSupply, asset] = await Promise.all([
     queryLsdMetadata(),

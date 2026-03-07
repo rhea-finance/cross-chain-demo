@@ -8,7 +8,6 @@ import {
   formatErrorMessage,
   getAccountIdUi,
   parseAmount,
-  formatAmount,
 } from "@/utils/chainsUtil";
 import { EVM_CHAINS } from "@/services/chainConfig";
 import {
@@ -549,13 +548,20 @@ const LSDPage = () => {
           <h2 className="text-lg font-semibold mb-4 text-left">Supply USDT</h2>
           <div className="space-y-4">
             <div>
-              <label className="block text-sm text-gray-50 mb-2">Amount</label>
+              <div className="flex items-center justify-between">
+                <label className="block text-sm text-gray-50 mb-2">
+                  USDT Amount
+                </label>
+                <label className="block text-sm text-gray-50 mb-2">
+                  {bscUsdtBalance}
+                </label>
+              </div>
               <input
                 type="text"
                 value={supplyAmount}
                 onChange={(e) => setSupplyAmount(e.target.value)}
                 className="w-full bg-gray-80 border border-gray-30 rounded-lg px-4 py-3 text-black placeholder-gray-200 focus:outline-none focus:border-green-10"
-                placeholder="0.0"
+                placeholder="0"
               />
             </div>
             <div className="flex items-center justify-between text-sm">
@@ -590,6 +596,8 @@ const LSDPage = () => {
                 !bscAccountId ||
                 !supplyAmount ||
                 parseFloat(supplyAmount) <= 0 ||
+                parseFloat(supplyAmount) > parseFloat(bscUsdtBalance) ||
+                !!supplyQuoteError ||
                 isSupplying ||
                 isSupplyQuoteLoading ||
                 isCalculatingLsd
@@ -602,18 +610,23 @@ const LSDPage = () => {
 
         {/* Withdraw USDT Section */}
         <div className="bg-white rounded-2xl p-6 border border-gray-30">
-          <h2 className="text-lg font-semibold mb-4 text-left">
-            Withdraw USDT
-          </h2>
+          <h2 className="text-lg font-semibold mb-4 text-left">Redeem USDT</h2>
           <div className="space-y-4">
             <div>
-              <label className="block text-sm text-gray-50 mb-2">Amount</label>
+              <div className="flex items-center justify-between">
+                <label className="block text-sm text-gray-50 mb-2">
+                  lsdUSDT Amount
+                </label>
+                <label className="block text-sm text-gray-50 mb-2">
+                  {bscLsdUsdtBalance}
+                </label>
+              </div>
               <input
                 type="text"
                 value={withdrawAmount}
                 onChange={(e) => setWithdrawAmount(e.target.value)}
                 className="w-full bg-gray-80 border border-gray-30 rounded-lg px-4 py-3 text-black placeholder-gray-200 focus:outline-none focus:border-purple-500"
-                placeholder="0.0"
+                placeholder="0"
               />
             </div>
             <div className="flex items-center justify-between text-sm">
@@ -626,19 +639,6 @@ const LSDPage = () => {
                   />
                 ) : (
                   estReceiveUsdt
-                )}
-              </span>
-            </div>
-            <div className="flex items-center justify-between text-sm">
-              <span className="text-gray-50">Est. Cost lsdUSDT</span>
-              <span className="text-black font-medium">
-                {isCalculatingWithdrawLsd ? (
-                  <Icon
-                    icon="svg-spinners:ring-resize"
-                    className="w-4 h-4 animate-spin"
-                  />
-                ) : (
-                  estCost
                 )}
               </span>
             </div>
@@ -661,6 +661,8 @@ const LSDPage = () => {
                 !bscAccountId ||
                 !withdrawAmount ||
                 parseFloat(withdrawAmount) <= 0 ||
+                parseFloat(estCost) > parseFloat(bscLsdUsdtBalance) ||
+                !!withdrawQuoteError ||
                 isWithdrawing ||
                 isWithdrawQuoteLoading ||
                 isCalculatingWithdrawLsd
