@@ -282,7 +282,7 @@ export function getJumpExporeUrl({
   subChain,
   txHash,
 }: {
-  chain: "evm" | "solana" | "btc" | "near";
+  chain: IChain;
   subChain?: string;
   txHash: string;
 }) {

@@ -146,7 +146,7 @@ export async function outChainToNearChainIntentsQuote({
     let customRecipientMsg = "";
     if (action == "Supply") {
       customRecipientMsg = getSupplyCustomRecipientMsg({
-        w,
+        w: w as any,
         useAsCollateral,
       });
     } else if (action == "SupplyCreate") {
@@ -156,12 +156,12 @@ export async function outChainToNearChainIntentsQuote({
       });
       customRecipientMsg = getCreateMcaCustomRecipientMsg({
         useAsCollateral,
-        wallets: [w],
+        wallets: [w as any],
         signedMessages: [signedMessage],
       });
     } else if (action == "Repay") {
       customRecipientMsg = getRepayCustomRecipientMsg({
-        w,
+        w: w as any,
       });
     } else if (action == "Create") {
       const signedMessage = await sign_message({
@@ -170,7 +170,7 @@ export async function outChainToNearChainIntentsQuote({
       });
       customRecipientMsg = getCreateMcaCustomRecipientMsg({
         useAsCollateral: false,
-        wallets: [w],
+        wallets: [w as any],
         signedMessages: [signedMessage],
       });
     }

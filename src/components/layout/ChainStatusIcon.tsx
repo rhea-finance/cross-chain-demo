@@ -21,6 +21,14 @@ const CHAIN_ICONS: Record<IChain, ChainIconConfig> = {
     active: "ethereum-chain-icon.svg",
     inactive: "evm-chain-gray-icon.svg",
   },
+  zcash: {
+    active: "zcash-chain-icon.svg",
+    inactive: "zcash-chain-gray-icon.svg",
+  },
+  near: {
+    active: "near-chain-icon.svg",
+    inactive: "near-chain-gray-icon.svg",
+  },
 };
 
 export function ChainStatusIcon({ chain }: { chain: IChain }) {

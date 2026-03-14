@@ -79,7 +79,7 @@ export async function addWallet({
     });
     const businessMap = await prepareBusinessDataOnAddWallet({
       mca,
-      w: add_w,
+      w: add_w as any,
       signature_w: signature_new_wallet,
       gas_token_id: "near",
       gas_token_amount: relayerGasAMount,
@@ -160,7 +160,7 @@ export async function removeWallet({
       w: format_wallet({
         chain: deleteWallet.chain,
         identityKey: deleteWallet.identityKey,
-      }),
+      }) as any,
       gas_token_id: "near",
       gas_token_amount: relayerGasAMount,
     });
