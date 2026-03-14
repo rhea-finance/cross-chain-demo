@@ -8,7 +8,7 @@ interface ChainIconConfig {
   inactive: string;
 }
 
-const CHAIN_ICONS: Record<IChain, ChainIconConfig> = {
+const CHAIN_ICONS: any = {
   btc: {
     active: "btc-chain-icon.svg",
     inactive: "btc-chain-gray-icon.svg",
