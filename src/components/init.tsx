@@ -15,7 +15,7 @@ import {
 import { ASSETS_CHAINS_NEAR } from "@/services/chainConfig";
 
 const mobile = isMobile();
-setCustomNodeUrl("https://nearinner.deltarpc.com");
+setCustomNodeUrl("https://free.rpc.fastnear.com");
 export default function Init() {
   const isIdle = useIdle(IDLE_INTERVAL);
   const { fetchData } = useFetchData();

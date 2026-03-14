@@ -116,6 +116,7 @@ const LSDPage = () => {
 
   // Try to get Intents quote for supply amount
   useEffect(() => {
+    debugger;
     if (!bscAccountId || !supplyAmount || parseFloat(supplyAmount) <= 0) {
       setSupplyQuoteError(null);
       setSupplyBridgeFee(null);
@@ -125,6 +126,7 @@ const LSDPage = () => {
 
     const tryQuote = async () => {
       try {
+        debugger;
         setIsSupplyQuoteLoading(true);
         setSupplyQuoteError(null);
         let bridgeFee = new Big(0);

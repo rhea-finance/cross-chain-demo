@@ -282,7 +282,7 @@ export function getJumpExporeUrl({
   subChain,
   txHash,
 }: {
-  chain: IChain;
+  chain: any;
   subChain?: string;
   txHash: string;
 }) {

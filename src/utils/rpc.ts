@@ -41,10 +41,10 @@ export function getRpcSelectorList(
             url: "https://near.lava.build",
             simpleName: "lava rpc",
           },
-          deltaRpc: {
-            url: "https://nearinner.deltarpc.com",
-            simpleName: "delta rpc",
-          },
+          // deltaRpc: {
+          //   url: "https://nearinner.deltarpc.com",
+          //   simpleName: "delta rpc",
+          // },
           fastRpc: {
             url: "https://free.rpc.fastnear.com",
             simpleName: "fastnear rpc",
