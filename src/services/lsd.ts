@@ -8,21 +8,24 @@ import { ethers } from "ethers";
 export const BSC_CHAIN_ID = "0x38"; // BSC mainnet chainId
 export const BSC_USDT_ADDRESS = "0x55d398326f99059fF775485246999027B3197955";
 // stg
-// export const BSC_LSD_USDT_ADDRESS =
-//   "0xc350bafb46813dd23fd298c1caef96da4a4c1f2a";
-// prd
 export const BSC_LSD_USDT_ADDRESS =
-  "0x5382555840ef9f54ef6d3ee5da60f12bcabf4b87";
+  // "0xc350bafb46813dd23fd298c1caef96da4a4c1f2a"; // wormhole
+  "0x126c17744bd5cc918e0ec8b3afed2383fa7376e7"; // omni
+// prd
+// export const BSC_LSD_USDT_ADDRESS =
+//   "0x5382555840ef9f54ef6d3ee5da60f12bcabf4b87";
 export const BSC_USDT_DECIMALS = 18;
 export const LSD_USDT_DECIMALS = 18;
 
 // NEAR config
-// export const LSD_CONTRACT_ID = "lsd.stg.ref-dev-team.near"; // stg
-export const LSD_CONTRACT_ID = "lsd-usdt.rhealab.near"; // prd
-// export const BURROW_CONTRACT_ID = "br.private-mainnet.ref-dev-team.near"; // stg
-export const BURROW_CONTRACT_ID = "contract.main.burrow.near"; // prd
+export const LSD_CONTRACT_ID = "lsd.stg.ref-dev-team.near"; // stg
+// export const LSD_CONTRACT_ID = "lsd-usdt.rhealab.near"; // prd
+export const BURROW_CONTRACT_ID = "br.private-mainnet.ref-dev-team.near"; // stg
+// export const BURROW_CONTRACT_ID = "contract.main.burrow.near"; // prd
 export const NEAR_USDT_ADDRESS = "usdt.tether-token.near";
 export const NEAR_USDT_DECIMALS = 6;
+export const OMNI_BNB_BRIDGE_ADDRESS =
+  "0x073C8a225c8Cf9d3f9157F5C1a1DbE02407f5720";
 
 // Types
 export interface LsdMetadata {
@@ -45,6 +48,29 @@ export interface BurrowAsset {
     shares: string;
     balance: string;
   };
+}
+
+export interface LsdOmniInitTransferMessage {
+  recipient: string;
+  fee: string;
+  native_token_fee: string;
+}
+
+type OmniTransferStatus =
+  | "Initialized"
+  | "Signed"
+  | "FastFinalisedOnNear"
+  | "FinalisedOnNear"
+  | "FastFinalised"
+  | "Finalised"
+  | "Claimed";
+
+const OMNI_NETWORK = "mainnet";
+
+async function loadOmniSdk() {
+  const sdk = await import("omni-bridge-sdk");
+  sdk.setNetwork(OMNI_NETWORK);
+  return sdk;
 }
 
 // Core LSD query functions
@@ -122,9 +148,168 @@ export async function calculateUsdtFromLsd(lsdAmount: string): Promise<string> {
   return formatAmount(usdtAmountRaw, BSC_USDT_DECIMALS);
 }
 
+export async function calculateUsdtFromLsdRaw(
+  lsdAmount: string // readable amount
+): Promise<string> {
+  const [metadata, totalSupply, asset] = await Promise.all([
+    queryLsdMetadata(),
+    queryLsdTotalSupply(),
+    queryBurrowAsset(NEAR_USDT_ADDRESS),
+  ]);
+
+  const lsdAmountRaw = parseAmount(lsdAmount, LSD_USDT_DECIMALS);
+
+  const BA = safeBig(lsdAmountRaw)
+    .mul(metadata.underlying_burrowland_shares)
+    .div(totalSupply);
+
+  return BA.mul(asset.supplied.balance)
+    .div(asset.supplied.shares)
+    .toFixed(0, Big.roundDown);
+}
+
 // Format lsd amount for display
 export function formatLsdAmount(lsdAmount: string): string {
   return formatAmount(lsdAmount, LSD_USDT_DECIMALS);
+}
+
+export function createLsdOmniInitTransferMessage(params: {
+  recipient: string;
+  fee: string;
+  nativeFee: string;
+}): LsdOmniInitTransferMessage {
+  return {
+    recipient: params.recipient,
+    fee: params.fee,
+    native_token_fee: params.nativeFee,
+  };
+}
+
+export function createLsdOmniRecipientMsg(
+  initTransferMessage: LsdOmniInitTransferMessage
+): string {
+  return JSON.stringify({
+    OmniBridge: JSON.stringify(initTransferMessage),
+  });
+}
+
+export function createLsdNearIntentsRecipientMsg(
+  depositAddress: string
+): string {
+  return JSON.stringify({
+    NearIntents: depositAddress,
+  });
+}
+
+export async function getOmniBridgeFee(params: {
+  sender: string;
+  recipient: string;
+  tokenAddress: string;
+  amount: string | bigint;
+}) {
+  const { OmniBridgeAPI } = await loadOmniSdk();
+  const api = new OmniBridgeAPI();
+  return api.getFee(
+    params.sender as `near:${string}` | `bnb:${string}`,
+    params.recipient as `near:${string}` | `bnb:${string}`,
+    params.tokenAddress as `near:${string}` | `bnb:${string}`,
+    params.amount
+  );
+}
+
+export async function bridgeTokenByOmniFromBsc(params: {
+  signer: ethers.Signer;
+  tokenAddress: string;
+  amount: string;
+  recipient: string;
+  fee: string;
+  nativeFee: string;
+  message?: string;
+}): Promise<string> {
+  const owner = await params.signer.getAddress();
+  const requiredAmount = BigInt(params.amount) + BigInt(params.fee);
+  const erc20Abi = [
+    "function allowance(address owner, address spender) external view returns (uint256)",
+    "function approve(address spender, uint256 amount) external returns (bool)",
+  ];
+  const bridgeAbi = [
+    "function initTransfer(address tokenAddress, uint128 amount, uint128 fee, uint128 nativeFee, string recipient, string message) payable external",
+  ];
+
+  const tokenContract = new ethers.Contract(
+    params.tokenAddress,
+    erc20Abi,
+    params.signer
+  );
+  const currentAllowance = await tokenContract.allowance(
+    owner,
+    OMNI_BNB_BRIDGE_ADDRESS
+  );
+
+  if (BigInt(currentAllowance.toString()) < requiredAmount) {
+    const approveTx = await tokenContract.approve(
+      OMNI_BNB_BRIDGE_ADDRESS,
+      requiredAmount.toString()
+    );
+    await approveTx.wait();
+  }
+
+  const bridgeContract = new ethers.Contract(
+    OMNI_BNB_BRIDGE_ADDRESS,
+    bridgeAbi,
+    params.signer
+  );
+  const tx = await bridgeContract.initTransfer(
+    params.tokenAddress,
+    BigInt(params.amount),
+    BigInt(params.fee),
+    BigInt(params.nativeFee),
+    params.recipient,
+    params.message || "",
+    {
+      value: BigInt(params.nativeFee),
+    }
+  );
+
+  await tx.wait();
+
+  if (!tx.hash) {
+    throw new Error("Failed to get Omni transaction hash");
+  }
+
+  return tx.hash as string;
+}
+
+export async function pollOmniTransferStatus(params: {
+  transactionHash: string;
+  successStatuses?: OmniTransferStatus[];
+  timeoutMs?: number;
+  intervalMs?: number;
+}) {
+  const {
+    transactionHash,
+    successStatuses = ["Claimed", "Finalised", "FastFinalised"],
+    timeoutMs = 15 * 60 * 1000,
+    intervalMs = 5000,
+  } = params;
+
+  const { OmniBridgeAPI } = await loadOmniSdk();
+  const api = new OmniBridgeAPI();
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    const statuses = (await api.getTransferStatus({
+      transactionHash,
+    })) as OmniTransferStatus[];
+
+    if (statuses.some((status) => successStatuses.includes(status))) {
+      return statuses;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+
+  throw new Error("Omni bridge transfer timed out");
 }
 
 // ETH final contract address
