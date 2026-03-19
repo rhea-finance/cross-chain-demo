@@ -23,7 +23,7 @@ const LSD = () => {
           >
             Omni
           </button>
-          <button
+          {/* <button
             type="button"
             onClick={() => setTab("wormhole")}
             className={`flex-1 py-2.5 rounded-lg text-sm font-medium transition-colors ${
@@ -33,7 +33,7 @@ const LSD = () => {
             }`}
           >
             Wormhole
-          </button>
+          </button> */}
           <button
             type="button"
             onClick={() => setTab("intents")}
