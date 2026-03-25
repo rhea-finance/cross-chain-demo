@@ -226,10 +226,19 @@ export default function WalletModal() {
           }`}
         >
           {/* Title */}
-          <div className="flex flex-col gap-4 items-center justify-center">
+          <div className="flex items-center justify-between">
+            <div className="w-8" />
             <span className="text-2xl text-b-10 paceGrotesk-Bold">
               Connect Wallets
             </span>
+            <button
+              type="button"
+              onClick={onRequestClose}
+              aria-label="Close"
+              className="flex items-center justify-center w-8 h-8 rounded-lg hover:bg-gray-80 transition-colors"
+            >
+              <Icon icon="iconamoon:close" className="text-black text-xl" />
+            </button>
           </div>
           {/* Multchain account */}
           {mca ? (
