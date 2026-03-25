@@ -47,6 +47,12 @@ const LSD = () => {
           </button>
         </div>
       </div>
+      <div className="container mx-auto px-6 max-w-2xl">
+        <div className="bg-gray-10 text-b-10 rounded-xl px-4 py-1 text-base">
+          Sign in with your EVM wallet account—no separate account setup is
+          required!
+        </div>
+      </div>
       {tab === "wormhole" ? (
         <LSDPage />
       ) : tab === "intents" ? (
