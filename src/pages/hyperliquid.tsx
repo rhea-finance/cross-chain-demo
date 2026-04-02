@@ -40,9 +40,28 @@ const ARBITRUM_USDC = INTENTS_TOKENS.USDC.evm.Arbitrum;
 type QuoteState = {
   depositAddress: string;
   amountIn: string;
+  amountOut?: string;
+  minAmountOut?: string;
   amountInFormatted?: string;
   amountOutFormatted?: string;
   timeEstimate?: number | string;
+};
+
+type DepositStepKey =
+  | "bridge"
+  | "settlement"
+  | "permitSignature"
+  | "permitSubmit"
+  | "history";
+
+type DepositStepStatus = "pending" | "loading" | "success" | "error";
+
+type DepositStep = {
+  key: DepositStepKey;
+  title: string;
+  description: string;
+  status: DepositStepStatus;
+  detail: string;
 };
 
 type PermitSignatureState = {
@@ -69,6 +88,25 @@ type ReportTxState = {
   requestBody: Record<string, unknown>;
   response: unknown;
   trxId: string;
+};
+
+type DepositHistoryState = {
+  requestBody: Record<string, unknown>;
+  response: unknown;
+  item: any;
+  status: string;
+};
+
+type WithdrawStepKey = "signature" | "submit" | "progress";
+
+type WithdrawStepStatus = "pending" | "loading" | "success" | "error";
+
+type WithdrawStep = {
+  key: WithdrawStepKey;
+  title: string;
+  description: string;
+  status: WithdrawStepStatus;
+  detail: string;
 };
 
 type WithdrawAction = {
@@ -124,26 +162,111 @@ function extractNearSignatureFromMpcResult(
     throw new Error("Missing receipts_outcome in evm_mpc_call response");
   }
 
-  const lastReceipt = receiptsOutcome[receiptsOutcome.length - 1];
-  const log = lastReceipt?.outcome?.logs?.[0];
+  for (const receipt of receiptsOutcome) {
+    const logs = receipt?.outcome?.logs;
+    if (!Array.isArray(logs)) continue;
 
-  if (!log || typeof log !== "string") {
-    throw new Error("Missing signature log in evm_mpc_call response");
+    for (const log of logs) {
+      if (!log || typeof log !== "string") continue;
+      if (!log.startsWith("EVENT_JSON:")) continue;
+
+      try {
+        const parsedLog = JSON.parse(log.replace("EVENT_JSON:", ""));
+        const signature = parsedLog?.data?.signature;
+        const eventName = parsedLog?.event;
+
+        if (
+          eventName === "signature_detail" &&
+          signature?.big_r?.affine_point &&
+          signature?.s?.scalar &&
+          typeof signature?.recovery_id === "number"
+        ) {
+          return signature as NearSecp256k1Signature;
+        }
+      } catch {
+        // keep scanning other logs
+      }
+    }
   }
-  const normalizedLog = log.replace("EVENT_JSON:", "");
 
-  const parsedLog = JSON.parse(normalizedLog);
-  const signature = parsedLog?.data?.signature;
+  throw new Error("Missing signature log in evm_mpc_call response");
+}
 
-  if (
-    !signature?.big_r?.affine_point ||
-    !signature?.s?.scalar ||
-    typeof signature?.recovery_id !== "number"
-  ) {
-    throw new Error("Invalid NEAR signature payload in log");
-  }
+function createInitialDepositSteps(): DepositStep[] {
+  return [
+    {
+      key: "bridge",
+      title: "Starting Bridge Task",
+      description: "Requesting route, opening wallet, and creating trx_id",
+      status: "pending",
+      detail: "Waiting to start",
+    },
+    {
+      key: "settlement",
+      title: "Waiting for Bridge Settlement",
+      description: "Checking 1Click route status",
+      status: "pending",
+      detail: "Waiting to start",
+    },
+    {
+      key: "permitSignature",
+      title: "Generating Permit Signature",
+      description: "Solana proof + mapped EVM signature",
+      status: "pending",
+      detail: "Waiting to start",
+    },
+    {
+      key: "permitSubmit",
+      title: "Submitting Permit",
+      description: "Calling Stableflow permit endpoint",
+      status: "pending",
+      detail: "Waiting to start",
+    },
+    {
+      key: "history",
+      title: "Confirming Deposit Status",
+      description: "Polling Stableflow history",
+      status: "pending",
+      detail: "Waiting to start",
+    },
+  ];
+}
 
-  return signature as NearSecp256k1Signature;
+function formatStableflowHistoryStatus(item: any) {
+  if (!item) return "PENDING_DEPOSIT";
+  if (item.status === "refunded") return "FAILED";
+  if (item.status === "bridged") return "WAITING_FOR_TRANSFER";
+  if (item.status === "signing") return "TRANSFERING";
+  if (item.status === "success") return "TRANSFER_SUCCESS";
+  if (item.permit_id && item.status === "init") return "WAITING_FOR_TRANSFER";
+  if (item.status === "permit_failed") return "TRANSFER_FAILED";
+  return "PENDING_DEPOSIT";
+}
+
+function createInitialWithdrawSteps(): WithdrawStep[] {
+  return [
+    {
+      key: "signature",
+      title: "Generating Withdraw Signature",
+      description: "Preparing withdraw3 payload and Solana proof",
+      status: "pending",
+      detail: "Waiting to start",
+    },
+    {
+      key: "submit",
+      title: "Submitting Withdraw Request",
+      description: "Sending withdraw3 action to HyperLiquid exchange",
+      status: "pending",
+      detail: "Waiting to start",
+    },
+    {
+      key: "progress",
+      title: "Checking Withdrawal Progress",
+      description: "Polling HyperLiquid ledger updates",
+      status: "pending",
+      detail: "Waiting to start",
+    },
+  ];
 }
 
 const HyperLiquidPage = () => {
@@ -172,6 +295,15 @@ const HyperLiquidPage = () => {
   );
   const [permitSubmitResult, setPermitSubmitResult] =
     useState<PermitSubmitState | null>(null);
+  const [depositSteps, setDepositSteps] = useState<DepositStep[]>(
+    createInitialDepositSteps()
+  );
+  const [depositHistoryLoading, setDepositHistoryLoading] = useState(false);
+  const [depositHistoryStatusText, setDepositHistoryStatusText] = useState(
+    "After permit submission, we will query Stableflow history for the final deposit status."
+  );
+  const [depositHistoryResult, setDepositHistoryResult] =
+    useState<DepositHistoryState | null>(null);
   const [reportTxStatusText, setReportTxStatusText] = useState(
     "The bridge report will be created after a successful Solana transfer."
   );
@@ -201,6 +333,11 @@ const HyperLiquidPage = () => {
   const [withdrawProgressStartTime, setWithdrawProgressStartTime] = useState<
     number | null
   >(null);
+  const [withdrawSteps, setWithdrawSteps] = useState<WithdrawStep[]>(
+    createInitialWithdrawSteps()
+  );
+  const [activeWithdrawStep, setActiveWithdrawStep] =
+    useState<WithdrawStepKey | null>(null);
 
   const [amount, setAmount] = useState("");
   const [quote, setQuote] = useState<QuoteState | null>(null);
@@ -210,8 +347,90 @@ const HyperLiquidPage = () => {
     "Connect a Solana wallet to start the deposit flow."
   );
   const [lastTxHash, setLastTxHash] = useState("");
+  const [activeDepositStep, setActiveDepositStep] =
+    useState<DepositStepKey | null>(null);
 
   const isSolanaConnected = !!solana.isSignedIn;
+
+  const updateDepositStep = useCallback(
+    (
+      key: DepositStepKey,
+      status: DepositStepStatus,
+      detail?: string,
+      description?: string
+    ) => {
+      setDepositSteps((prev) =>
+        prev.map((step) =>
+          step.key === key
+            ? {
+                ...step,
+                status,
+                detail: detail ?? step.detail,
+                description: description ?? step.description,
+              }
+            : step
+        )
+      );
+    },
+    []
+  );
+
+  const resetDepositFlow = useCallback(() => {
+    setDepositSteps(createInitialDepositSteps());
+    setActiveDepositStep(null);
+    setQuote(null);
+    setReportTxResult(null);
+    setPermitSignature(null);
+    setPermitSubmitResult(null);
+    setDepositHistoryResult(null);
+    setReportTxStatusText(
+      "The bridge report will be created after a successful Solana transfer."
+    );
+    setPermitStatusText(
+      "Prepare a permit signature for the mapped EVM address."
+    );
+    setPermitSubmitStatusText(
+      "Submit the generated permit signature to the reference backend."
+    );
+    setDepositHistoryStatusText(
+      "After permit submission, we will query Stableflow history for the final deposit status."
+    );
+  }, []);
+
+  const updateWithdrawStep = useCallback(
+    (key: WithdrawStepKey, status: WithdrawStepStatus, detail?: string) => {
+      setWithdrawSteps((prev) =>
+        prev.map((step) =>
+          step.key === key
+            ? {
+                ...step,
+                status,
+                detail: detail ?? step.detail,
+              }
+            : step
+        )
+      );
+    },
+    []
+  );
+
+  const resetWithdrawFlow = useCallback(() => {
+    setWithdrawSteps(createInitialWithdrawSteps());
+    setActiveWithdrawStep(null);
+    setWithdrawSignature(null);
+    setWithdrawSubmitResult(null);
+    setWithdrawProgressResult(null);
+    setWithdrawProgressStartTime(null);
+    setWithdrawStatusText(
+      "Prepare a HyperLiquid withdraw3 signature for the mapped EVM address."
+    );
+    setWithdrawSubmitStatusText(
+      "Submit the generated withdraw3 signature to HyperLiquid exchange."
+    );
+    setWithdrawProgressStatusText(
+      "Query withdrawal progress after the withdraw request is submitted."
+    );
+  }, []);
 
   const fetchMappedAddress = useCallback(async () => {
     if (!solana.isSignedIn || !solana.accountId) {
@@ -359,6 +578,7 @@ const HyperLiquidPage = () => {
       setReportTxResult(null);
       setPermitSignature(null);
       setPermitSubmitResult(null);
+      setDepositHistoryResult(null);
       setWithdrawAmount("");
       setWithdrawDestination("");
       setWithdrawSignature(null);
@@ -374,6 +594,9 @@ const HyperLiquidPage = () => {
       setPermitSubmitStatusText(
         "Submit the generated permit signature to the reference backend."
       );
+      setDepositHistoryStatusText(
+        "After permit submission, we will query Stableflow history for the final deposit status."
+      );
       setWithdrawStatusText(
         "Prepare a HyperLiquid withdraw3 signature for the mapped EVM address."
       );
@@ -383,6 +606,10 @@ const HyperLiquidPage = () => {
       setWithdrawProgressStatusText(
         "Query withdrawal progress after the withdraw request is submitted."
       );
+      setDepositSteps(createInitialDepositSteps());
+      setActiveDepositStep(null);
+      setWithdrawSteps(createInitialWithdrawSteps());
+      setActiveWithdrawStep(null);
       setStatusText("Connect a Solana wallet to start the deposit flow.");
     }
   }, [solana.accountId, solana.isSignedIn]);
@@ -406,6 +633,264 @@ const HyperLiquidPage = () => {
     };
   }, [quote, amount]);
 
+  const generatePermitSignatureWithRawValue = useCallback(
+    async (rawValue: string) => {
+      if (!solana.isSignedIn || !solana.accountId) {
+        throw new Error("Solana wallet is not connected");
+      }
+      if (!mappedEvmAddress) {
+        throw new Error("Mapped EVM address is not ready yet");
+      }
+      if (!window.solanaWallet?.signMessage) {
+        throw new Error(
+          "Current Solana wallet does not expose signMessage. Reconnect the wallet and try again."
+        );
+      }
+
+      setPermitLoading(true);
+      setPermitSignature(null);
+      setPermitSubmitResult(null);
+      setPermitAmount(
+        ethers.utils.formatUnits(rawValue, ARBITRUM_USDC.decimals)
+      );
+      setPermitSubmitStatusText(
+        "Submit the generated permit signature to the reference backend."
+      );
+      setPermitStatusText("Reading the latest USDC permit nonce...");
+
+      try {
+        const provider = new ethers.providers.JsonRpcProvider(
+          config_evm.chains.arbitrum.rpcUrl
+        );
+        const usdcContract = new ethers.Contract(
+          ARBITRUM_USDC.contractAddress,
+          ["function nonces(address) view returns (uint256)"],
+          provider
+        );
+
+        const nonce = (await usdcContract.nonces(mappedEvmAddress)).toString();
+        const deadline = (Math.floor(Date.now() / 1000) + 86400).toString();
+
+        const domain = {
+          name: USDC_PERMIT_NAME,
+          version: USDC_PERMIT_VERSION,
+          chainId: ARBITRUM_CHAIN_ID,
+          verifyingContract: ARBITRUM_USDC.contractAddress,
+        };
+
+        const types = {
+          Permit: [
+            { name: "owner", type: "address" },
+            { name: "spender", type: "address" },
+            { name: "value", type: "uint256" },
+            { name: "nonce", type: "uint256" },
+            { name: "deadline", type: "uint256" },
+          ],
+        };
+
+        const values = {
+          owner: mappedEvmAddress,
+          spender: HYPERLIQUID_BRIDGE_SPENDER,
+          value: rawValue,
+          nonce,
+          deadline,
+        };
+
+        const payload = ethers.utils._TypedDataEncoder.hash(
+          domain,
+          types,
+          values
+        );
+        const payloadHex = payload.replace(/^0x/, "");
+
+        setPermitStatusText(
+          "Requesting Solana proof for the permit payload..."
+        );
+        const proof = await sign_message_solana(payloadHex);
+
+        setPermitStatusText(
+          "Calling evm_mpc_call for the mapped EVM signature..."
+        );
+        const response = await fetch(EVM_MPC_CALL_URL, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            wallet: {
+              Solana: solana.accountId,
+            },
+            payload: payloadHex,
+            proof,
+          }),
+        });
+
+        if (!response.ok) {
+          throw new Error(`evm_mpc_call failed with status ${response.status}`);
+        }
+
+        const result = await response.json();
+        const nearSignature = extractNearSignatureFromMpcResult(result);
+        const evmSignature = nearSignatureToEvmSignatureHex(nearSignature);
+        const signatureState = {
+          payload: payloadHex,
+          proof,
+          response: result,
+          nonce,
+          deadline,
+          nearSignature,
+          evmSignature,
+        };
+
+        setPermitSignature(signatureState);
+        setPermitStatusText("Permit signature generated successfully.");
+        return signatureState;
+      } finally {
+        setPermitLoading(false);
+      }
+    },
+    [mappedEvmAddress, solana.accountId, solana.isSignedIn]
+  );
+
+  const submitPermitToBackend = useCallback(
+    async (
+      signatureState: PermitSignatureState,
+      rawValue: string,
+      trxId: string
+    ) => {
+      if (!mappedEvmAddress) {
+        throw new Error("Mapped EVM address is not ready yet");
+      }
+
+      setPermitSubmitLoading(true);
+      setPermitSubmitResult(null);
+      setPermitSubmitStatusText("Submitting permit signature to backend...");
+
+      try {
+        const split = ethers.utils.splitSignature(signatureState.evmSignature);
+        const requestBody = {
+          deadline: signatureState.deadline,
+          owner: mappedEvmAddress,
+          r: split.r,
+          s: split.s,
+          spender: HYPERLIQUID_BRIDGE_SPENDER,
+          token: ARBITRUM_USDC.contractAddress,
+          v: split.v,
+          value: rawValue,
+          trx_id: trxId,
+        };
+
+        const response = await fetch(STABLEFLOW_PERMIT_URL, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(requestBody),
+        });
+
+        const result = await response.json().catch(() => null);
+
+        if (!response.ok) {
+          throw new Error(
+            result?.msg ||
+              result?.message ||
+              `Permit backend failed with status ${response.status}`
+          );
+        }
+
+        const submitState = {
+          requestBody,
+          response: result,
+        };
+        setPermitSubmitResult(submitState);
+        setPermitSubmitStatusText("Permit request submitted successfully.");
+        return submitState;
+      } finally {
+        setPermitSubmitLoading(false);
+      }
+    },
+    [mappedEvmAddress]
+  );
+
+  const fetchDepositHistoryOnce = useCallback(
+    async (depositAddress: string) => {
+      if (!mappedEvmAddress) {
+        throw new Error("Mapped EVM address is not ready yet");
+      }
+
+      const params = new URLSearchParams({
+        addr: mappedEvmAddress,
+        deposit_address: depositAddress,
+      });
+      const requestBody = {
+        addr: mappedEvmAddress,
+        deposit_address: depositAddress,
+      };
+
+      const response = await fetch(
+        `https://api.stableflow.ai/v1/intents/history?${params.toString()}`
+      );
+      const result = await response.json().catch(() => null);
+
+      if (!response.ok) {
+        throw new Error(
+          result?.msg ||
+            result?.message ||
+            `History query failed with status ${response.status}`
+        );
+      }
+
+      const item = result?.data?.results?.[0] || null;
+      const status = formatStableflowHistoryStatus(item);
+      const nextState = {
+        requestBody,
+        response: result,
+        item,
+        status,
+      };
+      setDepositHistoryResult(nextState);
+      return nextState;
+    },
+    [mappedEvmAddress]
+  );
+
+  const pollDepositHistoryUntilFinal = useCallback(
+    async (depositAddress: string) => {
+      setDepositHistoryLoading(true);
+      setDepositHistoryStatusText(
+        "Polling Stableflow history for the final deposit status..."
+      );
+
+      try {
+        for (let index = 0; index < 60; index += 1) {
+          const result = await fetchDepositHistoryOnce(depositAddress);
+          const status = result.status;
+
+          if (status === "TRANSFER_SUCCESS") {
+            setDepositHistoryStatusText(
+              "Deposit confirmed successfully by Stableflow."
+            );
+            return result;
+          }
+
+          if (status === "FAILED" || status === "TRANSFER_FAILED") {
+            setDepositHistoryStatusText(
+              `Deposit failed with status: ${status}`
+            );
+            return result;
+          }
+
+          await new Promise((resolve) => window.setTimeout(resolve, 5000));
+        }
+
+        throw new Error("Timed out while waiting for Stableflow history");
+      } finally {
+        setDepositHistoryLoading(false);
+      }
+    },
+    [fetchDepositHistoryOnce]
+  );
+
   const handleBridge = async () => {
     if (!solana.isSignedIn || !solana.accountId) {
       solana.open();
@@ -425,18 +910,14 @@ const HyperLiquidPage = () => {
     }
 
     setBridgeLoading(true);
+    resetDepositFlow();
     setLastTxHash("");
-    setReportTxResult(null);
-    setPermitSubmitResult(null);
-    setReportTxStatusText(
-      "The bridge report will be created after a successful Solana transfer."
-    );
-    setPermitSubmitStatusText(
-      "Submit the generated permit signature to the reference backend."
-    );
-    setStatusText("Requesting 1Click bridge quote...");
+    setStatusText("Preparing the automatic deposit flow...");
+    let currentDepositStep: DepositStepKey = "bridge";
 
     try {
+      setActiveDepositStep("bridge");
+      updateDepositStep("bridge", "loading", "Requesting 1Click quote...");
       const quoteResult = await intentsQuotation({
         originAsset: SOLANA_USDC.assetId,
         destinationAsset: ARBITRUM_USDC.assetId,
@@ -456,12 +937,17 @@ const HyperLiquidPage = () => {
       setQuote({
         depositAddress: nextQuote.depositAddress,
         amountIn: nextQuote.amountIn,
+        amountOut: nextQuote.amountOut,
+        minAmountOut: nextQuote.minAmountOut,
         amountInFormatted: nextQuote.amountInFormatted,
         amountOutFormatted: nextQuote.amountOutFormatted,
         timeEstimate: nextQuote.timeEstimate,
       });
-
-      setStatusText("Quote ready. Waiting for Solana wallet transfer...");
+      updateDepositStep(
+        "bridge",
+        "loading",
+        "Quote ready. Please confirm the bridge transfer in your Solana wallet."
+      );
 
       const txHash = await transfer_solana({
         tokenAddress: SOLANA_USDC.contractAddress,
@@ -475,6 +961,11 @@ const HyperLiquidPage = () => {
 
       setLastTxHash(txHash);
       setStatusText("Bridge transfer submitted. Creating Stableflow trx_id...");
+      updateDepositStep(
+        "bridge",
+        "loading",
+        "Transfer sent. Creating trx_id..."
+      );
 
       const reportRequestBody = {
         deposit_address: nextQuote.depositAddress,
@@ -516,11 +1007,23 @@ const HyperLiquidPage = () => {
         response: reportResult,
         trxId,
       });
+      updateDepositStep(
+        "bridge",
+        "success",
+        `Bridge task created successfully. trx_id: ${trxId}`
+      );
       setReportTxStatusText(
         `Bridge report created successfully. trx_id: ${trxId}`
       );
       setStatusText(
         "Bridge transfer submitted. Waiting for Intents settlement on Arbitrum..."
+      );
+      currentDepositStep = "settlement";
+      setActiveDepositStep("settlement");
+      updateDepositStep(
+        "settlement",
+        "loading",
+        "Polling 1Click status for bridge settlement..."
       );
 
       const { status } = await pollingTransactionStatus(
@@ -530,23 +1033,99 @@ const HyperLiquidPage = () => {
       if (status !== "success") {
         throw new Error(`Bridge status: ${status}`);
       }
-
-      setStatusText(
-        "Bridge completed. Refreshing Arbitrum USDC balance on the mapped EVM address..."
+      updateDepositStep(
+        "settlement",
+        "success",
+        "Bridge settled to the mapped EVM address."
       );
+
+      if (!nextQuote.amountOut) {
+        throw new Error("Quote is missing amountOut");
+      }
+      if (ethers.BigNumber.from(nextQuote.amountOut).lt("5000000")) {
+        throw new Error(
+          `Bridge amountOut is below HyperLiquid minimum deposit: ${ethers.utils.formatUnits(
+            nextQuote.amountOut,
+            ARBITRUM_USDC.decimals
+          )} USDC`
+        );
+      }
+
+      setStatusText("Bridge settled. Generating permit signature...");
+      currentDepositStep = "permitSignature";
+      setActiveDepositStep("permitSignature");
+      updateDepositStep(
+        "permitSignature",
+        "loading",
+        `Signing permit for ${ethers.utils.formatUnits(
+          nextQuote.amountOut,
+          ARBITRUM_USDC.decimals
+        )} USDC...`
+      );
+      const signatureState = await generatePermitSignatureWithRawValue(
+        nextQuote.amountOut
+      );
+      updateDepositStep(
+        "permitSignature",
+        "success",
+        "Permit signature generated successfully."
+      );
+
+      setStatusText("Submitting permit transaction to Stableflow...");
+      currentDepositStep = "permitSubmit";
+      setActiveDepositStep("permitSubmit");
+      updateDepositStep(
+        "permitSubmit",
+        "loading",
+        "Calling Stableflow permit endpoint..."
+      );
+      await submitPermitToBackend(signatureState, nextQuote.amountOut, trxId);
+      updateDepositStep(
+        "permitSubmit",
+        "success",
+        "Permit submitted. Waiting for final deposit confirmation."
+      );
+
+      setStatusText("Permit submitted. Polling Stableflow history...");
+      currentDepositStep = "history";
+      setActiveDepositStep("history");
+      updateDepositStep(
+        "history",
+        "loading",
+        "Checking Stableflow history for the final deposit status..."
+      );
+      const historyState = await pollDepositHistoryUntilFinal(
+        nextQuote.depositAddress
+      );
+
+      if (historyState.status !== "TRANSFER_SUCCESS") {
+        throw new Error(
+          `Stableflow history returned status ${historyState.status}`
+        );
+      }
+      updateDepositStep(
+        "history",
+        "success",
+        "Deposit confirmed successfully."
+      );
+
+      setStatusText("Deposit confirmed. Refreshing balances...");
       await Promise.all([
         fetchArbUsdcBalance(),
         fetchSolanaUsdcBalance(),
         fetchHyperliquidBalance(),
       ]);
-      setStatusText("Bridge completed successfully.");
+      setStatusText("Deposit completed successfully.");
     } catch (error: any) {
       const message = formatErrorMessage(
         error?.message || error?.error || "Bridge failed"
       );
-      setStatusText(`Bridge failed: ${message}`);
+      const loadingStep = currentDepositStep || "bridge";
+      updateDepositStep(loadingStep, "error", message);
+      setStatusText(`Deposit failed: ${message}`);
       failToast({ failText: message });
     } finally {
+      setActiveDepositStep(null);
       setBridgeLoading(false);
     }
   };
@@ -569,102 +1148,10 @@ const HyperLiquidPage = () => {
       return;
     }
 
-    setPermitLoading(true);
-    setPermitSignature(null);
-    setPermitSubmitResult(null);
-    setPermitSubmitStatusText(
-      "Submit the generated permit signature to the reference backend."
-    );
-    setPermitStatusText("Reading the latest USDC permit nonce...");
-
     try {
-      if (!window.solanaWallet?.signMessage) {
-        throw new Error(
-          "Current Solana wallet does not expose signMessage. Reconnect the wallet and try again."
-        );
-      }
-
-      const provider = new ethers.providers.JsonRpcProvider(
-        config_evm.chains.arbitrum.rpcUrl
+      await generatePermitSignatureWithRawValue(
+        parseAmount(permitAmount, ARBITRUM_USDC.decimals)
       );
-      const usdcContract = new ethers.Contract(
-        ARBITRUM_USDC.contractAddress,
-        ["function nonces(address) view returns (uint256)"],
-        provider
-      );
-
-      const nonce = (await usdcContract.nonces(mappedEvmAddress)).toString();
-      const deadline = (Math.floor(Date.now() / 1000) + 86400).toString();
-      const value = parseAmount(permitAmount, ARBITRUM_USDC.decimals);
-
-      const domain = {
-        name: USDC_PERMIT_NAME,
-        version: USDC_PERMIT_VERSION,
-        chainId: ARBITRUM_CHAIN_ID,
-        verifyingContract: ARBITRUM_USDC.contractAddress,
-      };
-
-      const types = {
-        Permit: [
-          { name: "owner", type: "address" },
-          { name: "spender", type: "address" },
-          { name: "value", type: "uint256" },
-          { name: "nonce", type: "uint256" },
-          { name: "deadline", type: "uint256" },
-        ],
-      };
-
-      const values = {
-        owner: mappedEvmAddress,
-        spender: HYPERLIQUID_BRIDGE_SPENDER,
-        value,
-        nonce,
-        deadline,
-      };
-
-      const payload = ethers.utils._TypedDataEncoder.hash(
-        domain,
-        types,
-        values
-      );
-      const payloadHex = payload.replace(/^0x/, "");
-
-      setPermitStatusText("Requesting Solana proof for the permit payload...");
-      const proof = await sign_message_solana(payloadHex);
-
-      setPermitStatusText(
-        "Calling evm_mpc_call for the mapped EVM signature..."
-      );
-      const response = await fetch(EVM_MPC_CALL_URL, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          wallet: {
-            Solana: solana.accountId,
-          },
-          payload: payloadHex,
-          proof,
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error(`evm_mpc_call failed with status ${response.status}`);
-      }
-      const result = await response.json();
-      const nearSignature = extractNearSignatureFromMpcResult(result);
-      const evmSignature = nearSignatureToEvmSignatureHex(nearSignature);
-      setPermitSignature({
-        payload: payloadHex,
-        proof,
-        response: result,
-        nonce,
-        deadline,
-        nearSignature,
-        evmSignature,
-      });
-      setPermitStatusText("Permit signature generated successfully.");
     } catch (error: any) {
       const message = formatErrorMessage(
         error?.message || error?.error || "Permit signature failed"
@@ -690,47 +1177,12 @@ const HyperLiquidPage = () => {
       return;
     }
 
-    setPermitSubmitLoading(true);
-    setPermitSubmitResult(null);
-    setPermitSubmitStatusText("Submitting permit signature to backend...");
-
     try {
-      const split = ethers.utils.splitSignature(permitSignature.evmSignature);
-      const requestBody = {
-        deadline: permitSignature.deadline,
-        owner: mappedEvmAddress,
-        r: split.r,
-        s: split.s,
-        spender: HYPERLIQUID_BRIDGE_SPENDER,
-        token: ARBITRUM_USDC.contractAddress,
-        v: split.v,
-        value: parseAmount(permitAmount, ARBITRUM_USDC.decimals),
-        trx_id: reportTxResult.trxId,
-      };
-
-      const response = await fetch(STABLEFLOW_PERMIT_URL, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(requestBody),
-      });
-
-      const result = await response.json().catch(() => null);
-
-      if (!response.ok) {
-        throw new Error(
-          result?.msg ||
-            result?.message ||
-            `Permit backend failed with status ${response.status}`
-        );
-      }
-
-      setPermitSubmitResult({
-        requestBody,
-        response: result,
-      });
-      setPermitSubmitStatusText("Permit request submitted successfully.");
+      await submitPermitToBackend(
+        permitSignature,
+        parseAmount(permitAmount, ARBITRUM_USDC.decimals),
+        reportTxResult.trxId
+      );
     } catch (error: any) {
       const message = formatErrorMessage(
         error?.message || error?.error || "Permit submit failed"
@@ -867,6 +1319,77 @@ const HyperLiquidPage = () => {
     }
   };
 
+  const fetchWithdrawProgressOnce = useCallback(
+    async (startTime: number) => {
+      if (!mappedEvmAddress) {
+        throw new Error("Mapped EVM address is not ready yet");
+      }
+
+      const requestBody = {
+        type: "userNonFundingLedgerUpdates",
+        user: mappedEvmAddress,
+        startTime,
+      };
+
+      const response = await fetch(HYPERLIQUID_INFO_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(requestBody),
+      });
+
+      const result = await response.json().catch(() => null);
+
+      if (!response.ok) {
+        throw new Error(
+          result?.message ||
+            `Withdraw progress query failed with status ${response.status}`
+        );
+      }
+
+      const updates = Array.isArray(result) ? result : [];
+      const withdrawalUpdates = updates.filter((item) =>
+        JSON.stringify(item).toLowerCase().includes("withdraw")
+      );
+
+      const progressState = {
+        requestBody,
+        response: result,
+        updates: withdrawalUpdates,
+      };
+      setWithdrawProgressResult(progressState);
+      return progressState;
+    },
+    [mappedEvmAddress]
+  );
+
+  const pollWithdrawProgressUntilFound = useCallback(
+    async (startTime: number) => {
+      setWithdrawProgressLoading(true);
+      setWithdrawProgressStatusText(
+        "Withdraw submitted. Waiting for HyperLiquid ledger updates..."
+      );
+
+      try {
+        for (let index = 0; index < 60; index += 1) {
+          const progressState = await fetchWithdrawProgressOnce(startTime);
+          if (progressState.updates.length) {
+            setWithdrawProgressStatusText(
+              `Found ${progressState.updates.length} withdrawal ledger update(s).`
+            );
+            return progressState;
+          }
+          await new Promise((resolve) => window.setTimeout(resolve, 10000));
+        }
+        throw new Error("Timed out while waiting for withdrawal progress");
+      } finally {
+        setWithdrawProgressLoading(false);
+      }
+    },
+    [fetchWithdrawProgressOnce]
+  );
+
   const handleSubmitWithdraw = async () => {
     if (!withdrawSignature) {
       failToast({
@@ -932,6 +1455,212 @@ const HyperLiquidPage = () => {
       failToast({ failText: message });
     } finally {
       setWithdrawSubmitLoading(false);
+    }
+  };
+
+  const handleWithdraw = async () => {
+    if (!solana.isSignedIn || !solana.accountId) {
+      solana.open();
+      return;
+    }
+    if (!mappedEvmAddress) {
+      failToast({
+        failText: "Mapped EVM address is not ready yet.",
+      });
+      return;
+    }
+    if (!withdrawAmount || Number(withdrawAmount) <= 1) {
+      failToast({
+        failText: "Enter a valid withdraw amount greater than 1 USDC.",
+      });
+      return;
+    }
+    if (!withdrawDestination || !ethers.utils.isAddress(withdrawDestination)) {
+      failToast({
+        failText: "Enter a valid EVM destination address.",
+      });
+      return;
+    }
+
+    resetWithdrawFlow();
+    setWithdrawLoading(true);
+    setWithdrawStatusText("Preparing automatic withdraw flow...");
+    let currentWithdrawStep: WithdrawStepKey = "signature";
+
+    try {
+      setActiveWithdrawStep("signature");
+      updateWithdrawStep(
+        "signature",
+        "loading",
+        "Requesting Solana proof and mapped EVM signature..."
+      );
+
+      if (!window.solanaWallet?.signMessage) {
+        throw new Error(
+          "Current Solana wallet does not expose signMessage. Reconnect the wallet and try again."
+        );
+      }
+
+      const action: WithdrawAction = {
+        type: "withdraw3",
+        signatureChainId: HYPERLIQUID_SIGNATURE_CHAIN_ID,
+        hyperliquidChain: HYPERLIQUID_CHAIN,
+        destination: withdrawDestination,
+        amount: withdrawAmount,
+        time: Date.now(),
+      };
+
+      const domain = {
+        name: "HyperliquidSignTransaction",
+        version: "1",
+        chainId: ARBITRUM_CHAIN_ID,
+        verifyingContract: ethers.constants.AddressZero,
+      };
+
+      const types = {
+        "HyperliquidTransaction:Withdraw": [
+          { name: "hyperliquidChain", type: "string" },
+          { name: "destination", type: "string" },
+          { name: "amount", type: "string" },
+          { name: "time", type: "uint64" },
+        ],
+      };
+
+      const payload = ethers.utils._TypedDataEncoder.hash(domain, types, {
+        hyperliquidChain: action.hyperliquidChain,
+        destination: action.destination,
+        amount: action.amount,
+        time: action.time,
+      });
+      const payloadHex = payload.replace(/^0x/, "");
+
+      setWithdrawStatusText("Requesting Solana proof for withdraw3 payload...");
+      const proof = await sign_message_solana(payloadHex);
+
+      setWithdrawStatusText(
+        "Calling evm_mpc_call for the mapped EVM withdraw signature..."
+      );
+      const signatureResponse = await fetch(EVM_MPC_CALL_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          wallet: {
+            Solana: solana.accountId,
+          },
+          payload: payloadHex,
+          proof,
+        }),
+      });
+
+      if (!signatureResponse.ok) {
+        throw new Error(
+          `evm_mpc_call failed with status ${signatureResponse.status}`
+        );
+      }
+
+      const signatureResult = await signatureResponse.json();
+      const nearSignature = extractNearSignatureFromMpcResult(signatureResult);
+      const evmSignature = nearSignatureToEvmSignatureHex(nearSignature);
+
+      const signatureState = {
+        action,
+        payload: payloadHex,
+        proof,
+        response: signatureResult,
+        nearSignature,
+        evmSignature,
+      };
+      setWithdrawSignature(signatureState);
+      updateWithdrawStep(
+        "signature",
+        "success",
+        "Withdraw signature generated successfully."
+      );
+
+      currentWithdrawStep = "submit";
+      setActiveWithdrawStep("submit");
+      setWithdrawStatusText("Submitting withdraw3 request to HyperLiquid...");
+      updateWithdrawStep(
+        "submit",
+        "loading",
+        "Sending withdraw request to HyperLiquid exchange..."
+      );
+
+      const split = ethers.utils.splitSignature(signatureState.evmSignature);
+      const submitRequestBody = {
+        action: signatureState.action,
+        nonce: signatureState.action.time,
+        signature: {
+          r: split.r,
+          s: split.s,
+          v: split.v,
+        },
+      };
+
+      const submitResponse = await fetch(HYPERLIQUID_EXCHANGE_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(submitRequestBody),
+      });
+
+      const submitResult = await submitResponse.json().catch(() => null);
+
+      if (!submitResponse.ok) {
+        throw new Error(
+          submitResult?.message ||
+            submitResult?.error ||
+            `HyperLiquid exchange failed with status ${submitResponse.status}`
+        );
+      }
+
+      setWithdrawSubmitResult({
+        requestBody: submitRequestBody,
+        response: submitResult,
+      });
+      setWithdrawSubmitStatusText("Withdraw request submitted successfully.");
+      updateWithdrawStep(
+        "submit",
+        "success",
+        "Withdraw request submitted successfully."
+      );
+
+      const progressStartTime = signatureState.action.time - 5 * 60 * 1000;
+      setWithdrawProgressStartTime(progressStartTime);
+      currentWithdrawStep = "progress";
+      setActiveWithdrawStep("progress");
+      updateWithdrawStep(
+        "progress",
+        "loading",
+        "Polling HyperLiquid ledger updates..."
+      );
+      const progressState = await pollWithdrawProgressUntilFound(
+        progressStartTime
+      );
+      updateWithdrawStep(
+        "progress",
+        "success",
+        `Found ${progressState.updates.length} withdrawal ledger update(s).`
+      );
+
+      setWithdrawStatusText("Withdraw flow completed successfully.");
+      fetchHyperliquidBalance();
+    } catch (error: any) {
+      const message = formatErrorMessage(
+        error?.message || error?.error || "Withdraw failed"
+      );
+      const currentStep = currentWithdrawStep || "signature";
+      updateWithdrawStep(currentStep, "error", message);
+      setWithdrawStatusText(`Withdraw failed: ${message}`);
+      failToast({ failText: message });
+    } finally {
+      setActiveWithdrawStep(null);
+      setWithdrawLoading(false);
+      setWithdrawSubmitLoading(false);
+      setWithdrawProgressLoading(false);
     }
   };
 
@@ -1005,109 +1734,98 @@ const HyperLiquidPage = () => {
     }
   }, [mappedEvmAddress, withdrawProgressStartTime]);
 
-  useEffect(() => {
-    if (!withdrawProgressStartTime || !mappedEvmAddress) return;
-    fetchWithdrawProgress();
-
-    const timer = window.setInterval(() => {
-      fetchWithdrawProgress();
-    }, 10000);
-
-    return () => window.clearInterval(timer);
-  }, [fetchWithdrawProgress, mappedEvmAddress, withdrawProgressStartTime]);
-
   return (
     <div className="min-h-screen">
       <div className="container mx-auto max-w-5xl px-6 py-6">
-        <div className="rounded-3xl border border-[#b9ece4] bg-[#effaf7] px-8 py-10">
-          <div className="inline-flex rounded-full border border-[#b9ece4] bg-white px-4 py-1 text-sm font-medium text-[#156b5b]">
-            HyperLiquid Deposit Demo
-          </div>
-          <h1 className="mt-4 text-4xl font-semibold text-black">
-            Solana USDC to HyperLiquid
-          </h1>
-          <p className="mt-4 max-w-3xl text-lg leading-8 text-gray-50">
-            This first step bridges Solana USDC to the mapped EVM account on
-            Arbitrum. We will use that Arbitrum USDC in the next step for the
-            HyperLiquid deposit flow.
-          </p>
-        </div>
-
-        <div className="mt-6 grid gap-6 lg:grid-cols-[1.1fr_0.9fr]">
+        <div className="mt-6 space-y-6">
           <section className="rounded-3xl border border-[#e5e7eb] bg-white p-6">
-            <div className="flex items-center justify-between gap-4">
+            <div className="flex items-start justify-between gap-4">
               <div>
-                <h2 className="text-xl font-semibold text-black">
-                  1. Mapped EVM Address
+                <h2 className="text-2xl font-semibold text-black">
+                  Account Overview
                 </h2>
                 <p className="mt-1 text-sm leading-6 text-gray-50">
-                  The mapped Arbitrum address is derived from the connected
-                  Solana wallet through the NEAR contract.
+                  Connected wallet, mapped EVM address, and current balances.
                 </p>
               </div>
+              <button
+                type="button"
+                onClick={fetchMappedAddress}
+                disabled={!solana.accountId || mappingLoading}
+                className="rounded-xl border border-[#d8dee5] px-3 py-2 text-sm text-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Refresh Address
+              </button>
             </div>
 
             <div className="mt-5 rounded-2xl border border-[#edf0f3] bg-[#fafbfc] p-4">
               <div className="text-xs font-medium uppercase tracking-[0.12em] text-gray-50">
-                Solana Wallet
+                Connected Solana Wallet
               </div>
               <div className="mt-2 text-base font-medium text-black">
                 {solana.accountId ? getAccountIdUi(solana.accountId) : "-"}
               </div>
+              <div className="mt-4 text-xs font-medium uppercase tracking-[0.12em] text-gray-50">
+                Mapped EVM Address
+              </div>
+              <div className="mt-2 break-all text-sm font-medium text-black">
+                {mappingLoading
+                  ? "Loading mapped address..."
+                  : mappedEvmAddress || "-"}
+              </div>
             </div>
 
-            <div className="mt-4 rounded-2xl border border-[#edf0f3] bg-[#fafbfc] p-4">
-              <div className="flex items-center justify-between gap-4">
-                <div>
-                  <div className="text-xs font-medium uppercase tracking-[0.12em] text-gray-50">
-                    Mapped EVM Address
-                  </div>
-                  <div className="mt-2 break-all text-sm font-medium text-black">
-                    {mappingLoading
-                      ? "Loading mapped address..."
-                      : mappedEvmAddress || "-"}
-                  </div>
+            <div className="mt-5 grid gap-5 md:grid-cols-2">
+              <div className="rounded-2xl border border-[#edf0f3] bg-[#fafbfc] p-5">
+                <div className="text-xs font-medium uppercase tracking-[0.12em] text-gray-50">
+                  Mapped EVM Address Balance
+                </div>
+                <div className="mt-3 text-4xl font-semibold text-black">
+                  {balanceLoading ? "..." : arbUsdcBalance}
+                </div>
+                <div className="mt-1 text-sm text-gray-50">
+                  USDC on Arbitrum
                 </div>
                 <button
                   type="button"
-                  onClick={fetchMappedAddress}
-                  disabled={!solana.accountId || mappingLoading}
-                  className="rounded-xl border border-[#d8dee5] px-3 py-2 text-sm text-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                  onClick={fetchArbUsdcBalance}
+                  disabled={!mappedEvmAddress || balanceLoading}
+                  className="mt-4 rounded-xl border border-[#d8dee5] px-3 py-2 text-sm text-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  Refresh
+                  Refresh Balance
+                </button>
+              </div>
+
+              <div className="rounded-2xl border border-[#edf0f3] bg-[#fafbfc] p-5">
+                <div className="text-xs font-medium uppercase tracking-[0.12em] text-gray-50">
+                  HyperLiquid Balance
+                </div>
+                <div className="mt-3 text-4xl font-semibold text-black">
+                  {hyperliquidBalanceLoading ? "..." : hyperliquidBalance}
+                </div>
+                <div className="mt-1 text-sm text-gray-50">
+                  Mapped EVM address balance inside HyperLiquid
+                </div>
+                <button
+                  type="button"
+                  onClick={fetchHyperliquidBalance}
+                  disabled={!mappedEvmAddress || hyperliquidBalanceLoading}
+                  className="mt-4 rounded-xl border border-[#d8dee5] px-3 py-2 text-sm text-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Refresh HyperLiquid Balance
                 </button>
               </div>
             </div>
+          </section>
 
-            <div className="mt-6">
-              <h2 className="text-xl font-semibold text-black">
-                2. Bridge Solana USDC to Arbitrum
-              </h2>
-              <p className="mt-1 text-sm leading-6 text-gray-50">
-                We will request a 1Click quote, send Solana USDC to the returned
-                deposit address, and settle the bridged funds to the mapped EVM
-                address on Arbitrum.
-              </p>
-            </div>
-
-            <div className="mt-5 rounded-2xl border border-[#edf0f3] p-4">
-              <div className="text-xs font-medium uppercase tracking-[0.12em] text-gray-50">
-                Route
-              </div>
-              <div className="mt-3 text-sm text-black">
-                Solana USDC
-                <span className="mx-2 text-gray-40">{"->"}</span>
-                Arbitrum USDC
-              </div>
-              <div className="mt-2 text-xs text-gray-50">
-                Origin assetId: {SOLANA_USDC.assetId}
-              </div>
-              <div className="mt-1 text-xs text-gray-50">
-                Destination assetId: {ARBITRUM_USDC.assetId}
+          <section className="rounded-3xl border border-[#e5e7eb] bg-white p-6">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 className="text-2xl font-semibold text-black">Deposit</h2>
               </div>
             </div>
 
-            <div className="mt-4">
+            <div className="mt-5">
               <div className="flex items-center justify-between gap-4">
                 <label className="text-sm font-medium text-black">
                   Solana USDC Amount
@@ -1117,7 +1835,7 @@ const HyperLiquidPage = () => {
                   USDC
                 </div>
               </div>
-              <div className="border border-b-10 rounded-2xl mt-2">
+              <div className="mt-2 rounded-2xl border border-black">
                 <input
                   type="number"
                   min="0"
@@ -1125,7 +1843,7 @@ const HyperLiquidPage = () => {
                   value={amount}
                   onChange={(event) => setAmount(event.target.value)}
                   placeholder="0.0"
-                  className="w-full  px-4 py-3 text-base outline-none transition-colors text-b-10"
+                  className="w-full rounded-2xl px-4 py-3 text-base outline-none text-b-10"
                 />
               </div>
             </div>
@@ -1136,12 +1854,12 @@ const HyperLiquidPage = () => {
               disabled={bridgeLoading || !solana.accountId || !mappedEvmAddress}
               className="mt-5 w-full rounded-2xl bg-black px-4 py-3 text-base font-medium text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              {bridgeLoading ? "Bridging..." : "Bridge to Mapped EVM Address"}
+              {bridgeLoading ? "Depositing..." : "Deposit"}
             </button>
 
-            <div className="mt-4 rounded-2xl border border-[#edf0f3] bg-[#fafbfc] p-4">
+            <div className="mt-5 rounded-2xl border border-[#edf0f3] bg-[#fafbfc] p-4">
               <div className="text-xs font-medium uppercase tracking-[0.12em] text-gray-50">
-                Status
+                Deposit Status
               </div>
               <div className="mt-2 text-sm leading-6 text-black">
                 {statusText}
@@ -1153,122 +1871,90 @@ const HyperLiquidPage = () => {
               ) : null}
             </div>
 
-            <div className="mt-6">
-              <h2 className="text-xl font-semibold text-black">
-                4. Permit Signature
-              </h2>
-              <p className="mt-1 text-sm leading-6 text-gray-50">
-                With bridged USDC already on the mapped EVM address, generate
-                the HyperLiquid permit signature through Solana proof and
-                `evm_mpc_call`.
-              </p>
-            </div>
+            <div className="mt-6 rounded-3xl border border-[#edf0f3] p-5">
+              <div className="text-2xl font-semibold text-black">
+                Deposit ongoing
+              </div>
+              <div className="mt-6 space-y-0">
+                {depositSteps.map((step, index) => {
+                  const isLast = index === depositSteps.length - 1;
+                  const isSuccess = step.status === "success";
+                  const isLoading = step.status === "loading";
+                  const isError = step.status === "error";
 
-            <div className="mt-5 rounded-2xl border border-[#edf0f3] p-4">
-              <div className="flex items-center justify-between gap-4">
-                <label className="text-sm font-medium text-black">
-                  Permit Amount
-                </label>
-                <div className="text-sm text-gray-50">
-                  Available: {balanceLoading ? "..." : arbUsdcBalance} USDC
-                </div>
-              </div>
-              <div className="border border-b-10 rounded-2xl mt-2">
-                <input
-                  type="number"
-                  min="0"
-                  step="0.000001"
-                  value={permitAmount}
-                  onChange={(event) => setPermitAmount(event.target.value)}
-                  placeholder="0.0"
-                  className="w-full px-4 py-3 text-base outline-none transition-colors text-b-10"
-                />
-              </div>
-              <div className="mt-3 flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => setPermitAmount(arbUsdcBalance)}
-                  disabled={!arbUsdcBalance || Number(arbUsdcBalance) <= 0}
-                  className="rounded-xl border border-[#d8dee5] px-3 py-2 text-sm text-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  Use Balance
-                </button>
-                <button
-                  type="button"
-                  onClick={handlePermitSignature}
-                  disabled={
-                    permitLoading ||
-                    !solana.accountId ||
-                    !mappedEvmAddress ||
-                    Number(permitAmount || 0) <= 0
-                  }
-                  className="rounded-xl bg-black px-4 py-2 text-sm font-medium text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {permitLoading ? "Signing..." : "Generate Permit Signature"}
-                </button>
-              </div>
-            </div>
-
-            <div className="mt-4 rounded-2xl border border-[#edf0f3] bg-[#fafbfc] p-4">
-              <div className="text-xs font-medium uppercase tracking-[0.12em] text-gray-50">
-                Permit Status
-              </div>
-              <div className="mt-2 text-sm leading-6 text-black">
-                {permitStatusText}
-              </div>
-            </div>
-
-            <div className="mt-4 rounded-2xl border border-[#edf0f3] p-4">
-              <div className="flex items-center justify-between gap-4">
-                <div>
-                  <div className="text-sm font-medium text-black">
-                    Submit Permit to Backend
-                  </div>
-                  <div className="mt-1 text-sm leading-6 text-gray-50">
-                    This calls the reference permit endpoint with the `trx_id`
-                    created by `/v1/intents/trx`.
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={handleSubmitPermit}
-                  disabled={
-                    !permitSignature ||
-                    !reportTxResult?.trxId ||
-                    permitSubmitLoading
-                  }
-                  className="rounded-xl bg-black px-4 py-2 text-sm font-medium text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {permitSubmitLoading ? "Submitting..." : "Submit Permit"}
-                </button>
+                  return (
+                    <div
+                      key={step.key}
+                      className="grid grid-cols-[56px_1fr] gap-4"
+                    >
+                      <div className="flex flex-col items-center">
+                        <div
+                          className={[
+                            "flex h-12 w-12 items-center justify-center rounded-full border-2 text-lg font-semibold",
+                            isSuccess
+                              ? "border-[#12d6a0] bg-[#ecfff8] text-[#12d6a0]"
+                              : "",
+                            isLoading
+                              ? "border-[#12d6a0] bg-[#ecfff8] text-[#12d6a0]"
+                              : "",
+                            isError
+                              ? "border-[#ef4444] bg-[#fff1f2] text-[#ef4444]"
+                              : "",
+                            step.status === "pending"
+                              ? "border-[#d8dee5] bg-white text-[#94a3b8]"
+                              : "",
+                          ].join(" ")}
+                        >
+                          {isSuccess ? (
+                            "✓"
+                          ) : isError ? (
+                            "!"
+                          ) : isLoading ? (
+                            <span className="inline-block h-5 w-5 animate-spin rounded-full border-2 border-[#12d6a0] border-t-transparent" />
+                          ) : (
+                            <span className="inline-block h-5 w-5 rounded-full border-2 border-[#94a3b8] border-t-transparent" />
+                          )}
+                        </div>
+                        {!isLast ? (
+                          <div
+                            className={[
+                              "min-h-[44px] w-px",
+                              isSuccess || isLoading
+                                ? "bg-[#12d6a0]"
+                                : "border-l border-dashed border-[#d8dee5]",
+                            ].join(" ")}
+                          />
+                        ) : null}
+                      </div>
+                      <div className="pb-8">
+                        <div className="text-[18px] font-semibold text-black">
+                          {step.title}
+                        </div>
+                        <div className="mt-1 text-sm leading-6 text-gray-50">
+                          {step.description}
+                        </div>
+                        <div
+                          className={[
+                            "mt-1 text-sm",
+                            isError ? "text-[#ef4444]" : "text-gray-50",
+                          ].join(" ")}
+                        >
+                          {step.detail}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             </div>
+          </section>
 
-            <div className="mt-4 rounded-2xl border border-[#edf0f3] bg-[#fafbfc] p-4">
-              <div className="text-xs font-medium uppercase tracking-[0.12em] text-gray-50">
-                Report Tx Status
-              </div>
-              <div className="mt-2 text-sm leading-6 text-black">
-                {reportTxStatusText}
-              </div>
-            </div>
-
-            <div className="mt-4 rounded-2xl border border-[#edf0f3] bg-[#fafbfc] p-4">
-              <div className="text-xs font-medium uppercase tracking-[0.12em] text-gray-50">
-                Permit Submit Status
-              </div>
-              <div className="mt-2 text-sm leading-6 text-black">
-                {permitSubmitStatusText}
-              </div>
-            </div>
-
-            <div className="mt-6">
-              <h2 className="text-xl font-semibold text-black">
-                5. Withdraw from HyperLiquid
-              </h2>
+          <section className="rounded-3xl border border-[#e5e7eb] bg-white p-6">
+            <div>
+              <h2 className="text-2xl font-semibold text-black">Withdraw</h2>
               <p className="mt-1 text-sm leading-6 text-gray-50">
                 Generate a HyperLiquid `withdraw3` signature with Solana proof,
-                then submit it to HyperLiquid exchange.
+                submit it, then poll the withdrawal progress automatically.
               </p>
             </div>
 
@@ -1312,17 +1998,7 @@ const HyperLiquidPage = () => {
               <div className="mt-3 flex items-center gap-2">
                 <button
                   type="button"
-                  onClick={() => setWithdrawAmount(hyperliquidBalance)}
-                  disabled={
-                    !hyperliquidBalance || Number(hyperliquidBalance) <= 0
-                  }
-                  className="rounded-xl border border-[#d8dee5] px-3 py-2 text-sm text-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  Use Balance
-                </button>
-                <button
-                  type="button"
-                  onClick={handleWithdrawSignature}
+                  onClick={handleWithdraw}
                   disabled={
                     withdrawLoading ||
                     !solana.accountId ||
@@ -1332,17 +2008,7 @@ const HyperLiquidPage = () => {
                   }
                   className="rounded-xl bg-black px-4 py-2 text-sm font-medium text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  {withdrawLoading
-                    ? "Signing..."
-                    : "Generate Withdraw Signature"}
-                </button>
-                <button
-                  type="button"
-                  onClick={handleSubmitWithdraw}
-                  disabled={!withdrawSignature || withdrawSubmitLoading}
-                  className="rounded-xl bg-black px-4 py-2 text-sm font-medium text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {withdrawSubmitLoading ? "Submitting..." : "Submit Withdraw"}
+                  {withdrawLoading ? "Withdrawing..." : "Withdraw"}
                 </button>
               </div>
             </div>
@@ -1356,350 +2022,428 @@ const HyperLiquidPage = () => {
               </div>
             </div>
 
-            <div className="mt-4 rounded-2xl border border-[#edf0f3] bg-[#fafbfc] p-4">
-              <div className="text-xs font-medium uppercase tracking-[0.12em] text-gray-50">
-                Withdraw Submit Status
+            <div className="mt-6 rounded-3xl border border-[#edf0f3] p-5">
+              <div className="text-2xl font-semibold text-black">
+                Withdraw ongoing
               </div>
-              <div className="mt-2 text-sm leading-6 text-black">
-                {withdrawSubmitStatusText}
-              </div>
-            </div>
+              <div className="mt-6 space-y-0">
+                {withdrawSteps.map((step, index) => {
+                  const isLast = index === withdrawSteps.length - 1;
+                  const isSuccess = step.status === "success";
+                  const isLoading = step.status === "loading";
+                  const isError = step.status === "error";
 
-            <div className="mt-4 rounded-2xl border border-[#edf0f3] p-4">
-              <div className="flex items-center justify-between gap-4">
-                <div>
-                  <div className="text-sm font-medium text-black">
-                    Query Withdraw Progress
-                  </div>
-                  <div className="mt-1 text-sm leading-6 text-gray-50">
-                    Check HyperLiquid ledger updates for the submitted withdraw.
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={fetchWithdrawProgress}
-                  disabled={
-                    !withdrawProgressStartTime || withdrawProgressLoading
-                  }
-                  className="rounded-xl bg-black px-4 py-2 text-sm font-medium text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {withdrawProgressLoading
-                    ? "Refreshing..."
-                    : "Refresh Progress"}
-                </button>
-              </div>
-            </div>
-
-            <div className="mt-4 rounded-2xl border border-[#edf0f3] bg-[#fafbfc] p-4">
-              <div className="text-xs font-medium uppercase tracking-[0.12em] text-gray-50">
-                Withdraw Progress Status
-              </div>
-              <div className="mt-2 text-sm leading-6 text-black">
-                {withdrawProgressStatusText}
+                  return (
+                    <div
+                      key={step.key}
+                      className="grid grid-cols-[56px_1fr] gap-4"
+                    >
+                      <div className="flex flex-col items-center">
+                        <div
+                          className={[
+                            "flex h-12 w-12 items-center justify-center rounded-full border-2 text-lg font-semibold",
+                            isSuccess
+                              ? "border-[#12d6a0] bg-[#ecfff8] text-[#12d6a0]"
+                              : "",
+                            isLoading
+                              ? "border-[#12d6a0] bg-[#ecfff8] text-[#12d6a0]"
+                              : "",
+                            isError
+                              ? "border-[#ef4444] bg-[#fff1f2] text-[#ef4444]"
+                              : "",
+                            step.status === "pending"
+                              ? "border-[#d8dee5] bg-white text-[#94a3b8]"
+                              : "",
+                          ].join(" ")}
+                        >
+                          {isSuccess ? (
+                            "✓"
+                          ) : isError ? (
+                            "!"
+                          ) : isLoading ? (
+                            <span className="inline-block h-5 w-5 animate-spin rounded-full border-2 border-[#12d6a0] border-t-transparent" />
+                          ) : (
+                            <span className="inline-block h-5 w-5 rounded-full border-2 border-[#94a3b8] border-t-transparent" />
+                          )}
+                        </div>
+                        {!isLast ? (
+                          <div
+                            className={[
+                              "min-h-[44px] w-px",
+                              isSuccess || isLoading
+                                ? "bg-[#12d6a0]"
+                                : "border-l border-dashed border-[#d8dee5]",
+                            ].join(" ")}
+                          />
+                        ) : null}
+                      </div>
+                      <div className="pb-8">
+                        <div className="text-[18px] font-semibold text-black">
+                          {step.title}
+                        </div>
+                        <div className="mt-1 text-sm leading-6 text-gray-50">
+                          {step.description}
+                        </div>
+                        <div
+                          className={[
+                            "mt-1 text-sm",
+                            isError ? "text-[#ef4444]" : "text-gray-50",
+                          ].join(" ")}
+                        >
+                          {step.detail}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             </div>
           </section>
 
-          <section className="rounded-3xl border border-[#e5e7eb] bg-white p-6">
-            <h2 className="text-xl font-semibold text-black">
-              3. Arbitrum USDC Balance
-            </h2>
-            <p className="mt-1 text-sm leading-6 text-gray-50">
-              Once Intents finishes the route, the bridged USDC should appear on
-              the mapped EVM address on Arbitrum.
-            </p>
+          <details className="rounded-3xl border border-[#e5e7eb] bg-white group">
+            <summary className="flex cursor-pointer list-none items-center justify-between px-6 py-5">
+              <div>
+                <h2 className="text-2xl font-semibold text-black">
+                  Transaction Status
+                </h2>
+                <p className="mt-1 text-sm leading-6 text-gray-50">
+                  Raw requests and responses for deposit and withdraw debugging.
+                </p>
+              </div>
+              <div className="text-2xl text-gray-50 transition-transform group-open:rotate-180">
+                ˅
+              </div>
+            </summary>
 
-            <div className="mt-5 rounded-2xl border border-[#edf0f3] bg-[#fafbfc] p-5">
-              <div className="text-xs font-medium uppercase tracking-[0.12em] text-gray-50">
-                Mapped EVM Address Balance
-              </div>
-              <div className="mt-3 text-4xl font-semibold text-black">
-                {balanceLoading ? "..." : arbUsdcBalance}
-              </div>
-              <div className="mt-1 text-sm text-gray-50">USDC on Arbitrum</div>
-              <button
-                type="button"
-                onClick={fetchArbUsdcBalance}
-                disabled={!mappedEvmAddress || balanceLoading}
-                className="mt-4 rounded-xl border border-[#d8dee5] px-3 py-2 text-sm text-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                Refresh Balance
-              </button>
-            </div>
+            <div className="border-t border-[#edf0f3] px-6 pb-6 pt-5">
+              <div className="grid gap-5 lg:grid-cols-2">
+                <div className="rounded-2xl border border-[#edf0f3] p-5">
+                  <div className="text-xs font-medium uppercase tracking-[0.12em] text-gray-50">
+                    Latest Quote
+                  </div>
+                  {quotedRouteSummary ? (
+                    <div className="mt-3 space-y-3 text-sm text-black">
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="text-gray-50">Send</span>
+                        <span>{quotedRouteSummary.sendAmount} USDC</span>
+                      </div>
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="text-gray-50">Estimated receive</span>
+                        <span>{quotedRouteSummary.receiveAmount} USDC</span>
+                      </div>
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="text-gray-50">ETA</span>
+                        <span>{quotedRouteSummary.eta}</span>
+                      </div>
+                      <div>
+                        <div className="text-gray-50">
+                          Intents deposit address
+                        </div>
+                        <div className="mt-1 break-all text-xs text-black">
+                          {quotedRouteSummary.depositAddress}
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="mt-3 text-sm text-gray-50">
+                      No quote yet. Enter an amount and bridge Solana USDC to
+                      generate the first route.
+                    </div>
+                  )}
+                </div>
 
-            <div className="mt-5 rounded-2xl border border-[#edf0f3] bg-[#fafbfc] p-5">
-              <div className="text-xs font-medium uppercase tracking-[0.12em] text-gray-50">
-                HyperLiquid Balance
-              </div>
-              <div className="mt-3 text-4xl font-semibold text-black">
-                {hyperliquidBalanceLoading ? "..." : hyperliquidBalance}
-              </div>
-              <div className="mt-1 text-sm text-gray-50">
-                Mapped EVM address balance inside HyperLiquid
-              </div>
-              <button
-                type="button"
-                onClick={fetchHyperliquidBalance}
-                disabled={!mappedEvmAddress || hyperliquidBalanceLoading}
-                className="mt-4 rounded-xl border border-[#d8dee5] px-3 py-2 text-sm text-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                Refresh HyperLiquid Balance
-              </button>
-            </div>
+                <div className="rounded-2xl border border-[#edf0f3] p-5">
+                  <div className="text-xs font-medium uppercase tracking-[0.12em] text-gray-50">
+                    Latest Report Tx
+                  </div>
+                  {reportTxResult ? (
+                    <div className="mt-3 space-y-4 text-sm text-black">
+                      <div>
+                        <div className="text-gray-50">trx_id</div>
+                        <div className="mt-1 break-all text-xs">
+                          {reportTxResult.trxId}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-gray-50">Request Body</div>
+                        <pre className="mt-1 overflow-x-auto rounded-xl bg-[#fafbfc] p-3 text-xs text-black">
+                          {JSON.stringify(reportTxResult.requestBody, null, 2)}
+                        </pre>
+                      </div>
+                      <div>
+                        <div className="text-gray-50">Backend Response</div>
+                        <pre className="mt-1 overflow-x-auto rounded-xl bg-[#fafbfc] p-3 text-xs text-black">
+                          {JSON.stringify(reportTxResult.response, null, 2)}
+                        </pre>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="mt-3 text-sm text-gray-50">
+                      No bridge report yet. A `trx_id` will appear after the
+                      Solana transfer is reported.
+                    </div>
+                  )}
+                </div>
 
-            <div className="mt-5 rounded-2xl border border-[#edf0f3] p-5">
-              <div className="text-xs font-medium uppercase tracking-[0.12em] text-gray-50">
-                Latest Quote
-              </div>
-              {quotedRouteSummary ? (
-                <div className="mt-3 space-y-3 text-sm text-black">
-                  <div className="flex items-center justify-between gap-3">
-                    <span className="text-gray-50">Send</span>
-                    <span>{quotedRouteSummary.sendAmount} USDC</span>
+                <div className="rounded-2xl border border-[#edf0f3] p-5">
+                  <div className="text-xs font-medium uppercase tracking-[0.12em] text-gray-50">
+                    Latest Permit Signature
                   </div>
-                  <div className="flex items-center justify-between gap-3">
-                    <span className="text-gray-50">Estimated receive</span>
-                    <span>{quotedRouteSummary.receiveAmount} USDC</span>
-                  </div>
-                  <div className="flex items-center justify-between gap-3">
-                    <span className="text-gray-50">ETA</span>
-                    <span>{quotedRouteSummary.eta}</span>
-                  </div>
-                  <div>
-                    <div className="text-gray-50">Intents deposit address</div>
-                    <div className="mt-1 break-all text-xs text-black">
-                      {quotedRouteSummary.depositAddress}
+                  {permitSignature ? (
+                    <div className="mt-3 space-y-4 text-sm text-black">
+                      <div>
+                        <div className="text-gray-50">Nonce</div>
+                        <div className="mt-1 break-all text-xs">
+                          {permitSignature.nonce}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-gray-50">Deadline</div>
+                        <div className="mt-1 break-all text-xs">
+                          {permitSignature.deadline}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-gray-50">Payload</div>
+                        <div className="mt-1 break-all text-xs">
+                          {permitSignature.payload}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-gray-50">Solana Proof</div>
+                        <div className="mt-1 break-all text-xs">
+                          {permitSignature.proof}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-gray-50">EVM Signature</div>
+                        <div className="mt-1 break-all text-xs">
+                          {permitSignature.evmSignature}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-gray-50">NEAR Signature</div>
+                        <pre className="mt-1 overflow-x-auto rounded-xl bg-[#fafbfc] p-3 text-xs text-black">
+                          {JSON.stringify(
+                            permitSignature.nearSignature,
+                            null,
+                            2
+                          )}
+                        </pre>
+                      </div>
                     </div>
-                  </div>
+                  ) : (
+                    <div className="mt-3 text-sm text-gray-50">
+                      No permit signature yet. Generate one after the mapped EVM
+                      address has USDC on Arbitrum.
+                    </div>
+                  )}
                 </div>
-              ) : (
-                <div className="mt-3 text-sm text-gray-50">
-                  No quote yet. Enter an amount and bridge Solana USDC to
-                  generate the first route.
-                </div>
-              )}
-            </div>
 
-            <div className="mt-5 rounded-2xl border border-[#edf0f3] p-5">
-              <div className="text-xs font-medium uppercase tracking-[0.12em] text-gray-50">
-                Latest Report Tx
-              </div>
-              {reportTxResult ? (
-                <div className="mt-3 space-y-4 text-sm text-black">
-                  <div>
-                    <div className="text-gray-50">trx_id</div>
-                    <div className="mt-1 break-all text-xs">
-                      {reportTxResult.trxId}
+                <div className="rounded-2xl border border-[#edf0f3] p-5">
+                  <div className="text-xs font-medium uppercase tracking-[0.12em] text-gray-50">
+                    Latest Permit Submit
+                  </div>
+                  {permitSubmitResult ? (
+                    <div className="mt-3 space-y-4 text-sm text-black">
+                      <div>
+                        <div className="text-gray-50">Request Body</div>
+                        <pre className="mt-1 overflow-x-auto rounded-xl bg-[#fafbfc] p-3 text-xs text-black">
+                          {JSON.stringify(
+                            permitSubmitResult.requestBody,
+                            null,
+                            2
+                          )}
+                        </pre>
+                      </div>
+                      <div>
+                        <div className="text-gray-50">Backend Response</div>
+                        <pre className="mt-1 overflow-x-auto rounded-xl bg-[#fafbfc] p-3 text-xs text-black">
+                          {JSON.stringify(permitSubmitResult.response, null, 2)}
+                        </pre>
+                      </div>
                     </div>
-                  </div>
-                  <div>
-                    <div className="text-gray-50">Request Body</div>
-                    <pre className="mt-1 overflow-x-auto rounded-xl bg-[#fafbfc] p-3 text-xs text-black">
-                      {JSON.stringify(reportTxResult.requestBody, null, 2)}
-                    </pre>
-                  </div>
-                  <div>
-                    <div className="text-gray-50">Backend Response</div>
-                    <pre className="mt-1 overflow-x-auto rounded-xl bg-[#fafbfc] p-3 text-xs text-black">
-                      {JSON.stringify(reportTxResult.response, null, 2)}
-                    </pre>
-                  </div>
+                  ) : (
+                    <div className="mt-3 text-sm text-gray-50">
+                      No backend permit submission yet.
+                    </div>
+                  )}
                 </div>
-              ) : (
-                <div className="mt-3 text-sm text-gray-50">
-                  No bridge report yet. A `trx_id` will appear after the Solana
-                  transfer is reported.
-                </div>
-              )}
-            </div>
 
-            <div className="mt-5 rounded-2xl border border-[#edf0f3] p-5">
-              <div className="text-xs font-medium uppercase tracking-[0.12em] text-gray-50">
-                Latest Permit Signature
-              </div>
-              {permitSignature ? (
-                <div className="mt-3 space-y-4 text-sm text-black">
-                  <div>
-                    <div className="text-gray-50">Nonce</div>
-                    <div className="mt-1 break-all text-xs">
-                      {permitSignature.nonce}
+                <div className="rounded-2xl border border-[#edf0f3] p-5">
+                  <div className="text-xs font-medium uppercase tracking-[0.12em] text-gray-50">
+                    Latest Deposit History
+                  </div>
+                  {depositHistoryResult ? (
+                    <div className="mt-3 space-y-4 text-sm text-black">
+                      <div>
+                        <div className="text-gray-50">Mapped Status</div>
+                        <div className="mt-1 break-all text-xs">
+                          {depositHistoryResult.status}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-gray-50">Request Params</div>
+                        <pre className="mt-1 overflow-x-auto rounded-xl bg-[#fafbfc] p-3 text-xs text-black">
+                          {JSON.stringify(
+                            depositHistoryResult.requestBody,
+                            null,
+                            2
+                          )}
+                        </pre>
+                      </div>
+                      <div>
+                        <div className="text-gray-50">Matched Record</div>
+                        <pre className="mt-1 overflow-x-auto rounded-xl bg-[#fafbfc] p-3 text-xs text-black">
+                          {JSON.stringify(depositHistoryResult.item, null, 2)}
+                        </pre>
+                      </div>
+                      <div>
+                        <div className="text-gray-50">Raw Response</div>
+                        <pre className="mt-1 overflow-x-auto rounded-xl bg-[#fafbfc] p-3 text-xs text-black">
+                          {JSON.stringify(
+                            depositHistoryResult.response,
+                            null,
+                            2
+                          )}
+                        </pre>
+                      </div>
                     </div>
-                  </div>
-                  <div>
-                    <div className="text-gray-50">Deadline</div>
-                    <div className="mt-1 break-all text-xs">
-                      {permitSignature.deadline}
+                  ) : (
+                    <div className="mt-3 text-sm text-gray-50">
+                      No Stableflow history yet.
                     </div>
-                  </div>
-                  <div>
-                    <div className="text-gray-50">Payload</div>
-                    <div className="mt-1 break-all text-xs">
-                      {permitSignature.payload}
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-gray-50">Solana Proof</div>
-                    <div className="mt-1 break-all text-xs">
-                      {permitSignature.proof}
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-gray-50">EVM Signature</div>
-                    <div className="mt-1 break-all text-xs">
-                      {permitSignature.evmSignature}
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-gray-50">NEAR Signature</div>
-                    <pre className="mt-1 overflow-x-auto rounded-xl bg-[#fafbfc] p-3 text-xs text-black">
-                      {JSON.stringify(permitSignature.nearSignature, null, 2)}
-                    </pre>
-                  </div>
+                  )}
                 </div>
-              ) : (
-                <div className="mt-3 text-sm text-gray-50">
-                  No permit signature yet. Generate one after the mapped EVM
-                  address has USDC on Arbitrum.
-                </div>
-              )}
-            </div>
 
-            <div className="mt-5 rounded-2xl border border-[#edf0f3] p-5">
-              <div className="text-xs font-medium uppercase tracking-[0.12em] text-gray-50">
-                Latest Permit Submit
-              </div>
-              {permitSubmitResult ? (
-                <div className="mt-3 space-y-4 text-sm text-black">
-                  <div>
-                    <div className="text-gray-50">Request Body</div>
-                    <pre className="mt-1 overflow-x-auto rounded-xl bg-[#fafbfc] p-3 text-xs text-black">
-                      {JSON.stringify(permitSubmitResult.requestBody, null, 2)}
-                    </pre>
+                <div className="rounded-2xl border border-[#edf0f3] p-5">
+                  <div className="text-xs font-medium uppercase tracking-[0.12em] text-gray-50">
+                    Latest Withdraw Signature
                   </div>
-                  <div>
-                    <div className="text-gray-50">Backend Response</div>
-                    <pre className="mt-1 overflow-x-auto rounded-xl bg-[#fafbfc] p-3 text-xs text-black">
-                      {JSON.stringify(permitSubmitResult.response, null, 2)}
-                    </pre>
-                  </div>
-                </div>
-              ) : (
-                <div className="mt-3 text-sm text-gray-50">
-                  No backend permit submission yet.
-                </div>
-              )}
-            </div>
-
-            <div className="mt-5 rounded-2xl border border-[#edf0f3] p-5">
-              <div className="text-xs font-medium uppercase tracking-[0.12em] text-gray-50">
-                Latest Withdraw Signature
-              </div>
-              {withdrawSignature ? (
-                <div className="mt-3 space-y-4 text-sm text-black">
-                  <div>
-                    <div className="text-gray-50">Action</div>
-                    <pre className="mt-1 overflow-x-auto rounded-xl bg-[#fafbfc] p-3 text-xs text-black">
-                      {JSON.stringify(withdrawSignature.action, null, 2)}
-                    </pre>
-                  </div>
-                  <div>
-                    <div className="text-gray-50">Payload</div>
-                    <div className="mt-1 break-all text-xs">
-                      {withdrawSignature.payload}
+                  {withdrawSignature ? (
+                    <div className="mt-3 space-y-4 text-sm text-black">
+                      <div>
+                        <div className="text-gray-50">Action</div>
+                        <pre className="mt-1 overflow-x-auto rounded-xl bg-[#fafbfc] p-3 text-xs text-black">
+                          {JSON.stringify(withdrawSignature.action, null, 2)}
+                        </pre>
+                      </div>
+                      <div>
+                        <div className="text-gray-50">Payload</div>
+                        <div className="mt-1 break-all text-xs">
+                          {withdrawSignature.payload}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-gray-50">Solana Proof</div>
+                        <div className="mt-1 break-all text-xs">
+                          {withdrawSignature.proof}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-gray-50">EVM Signature</div>
+                        <div className="mt-1 break-all text-xs">
+                          {withdrawSignature.evmSignature}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-gray-50">NEAR Signature</div>
+                        <pre className="mt-1 overflow-x-auto rounded-xl bg-[#fafbfc] p-3 text-xs text-black">
+                          {JSON.stringify(
+                            withdrawSignature.nearSignature,
+                            null,
+                            2
+                          )}
+                        </pre>
+                      </div>
                     </div>
-                  </div>
-                  <div>
-                    <div className="text-gray-50">Solana Proof</div>
-                    <div className="mt-1 break-all text-xs">
-                      {withdrawSignature.proof}
+                  ) : (
+                    <div className="mt-3 text-sm text-gray-50">
+                      No withdraw signature yet.
                     </div>
+                  )}
+                </div>
+
+                <div className="rounded-2xl border border-[#edf0f3] p-5">
+                  <div className="text-xs font-medium uppercase tracking-[0.12em] text-gray-50">
+                    Latest Withdraw Submit
                   </div>
-                  <div>
-                    <div className="text-gray-50">EVM Signature</div>
-                    <div className="mt-1 break-all text-xs">
-                      {withdrawSignature.evmSignature}
+                  {withdrawSubmitResult ? (
+                    <div className="mt-3 space-y-4 text-sm text-black">
+                      <div>
+                        <div className="text-gray-50">Request Body</div>
+                        <pre className="mt-1 overflow-x-auto rounded-xl bg-[#fafbfc] p-3 text-xs text-black">
+                          {JSON.stringify(
+                            withdrawSubmitResult.requestBody,
+                            null,
+                            2
+                          )}
+                        </pre>
+                      </div>
+                      <div>
+                        <div className="text-gray-50">Backend Response</div>
+                        <pre className="mt-1 overflow-x-auto rounded-xl bg-[#fafbfc] p-3 text-xs text-black">
+                          {JSON.stringify(
+                            withdrawSubmitResult.response,
+                            null,
+                            2
+                          )}
+                        </pre>
+                      </div>
                     </div>
-                  </div>
-                  <div>
-                    <div className="text-gray-50">NEAR Signature</div>
-                    <pre className="mt-1 overflow-x-auto rounded-xl bg-[#fafbfc] p-3 text-xs text-black">
-                      {JSON.stringify(withdrawSignature.nearSignature, null, 2)}
-                    </pre>
-                  </div>
+                  ) : (
+                    <div className="mt-3 text-sm text-gray-50">
+                      No withdraw submission yet.
+                    </div>
+                  )}
                 </div>
-              ) : (
-                <div className="mt-3 text-sm text-gray-50">
-                  No withdraw signature yet.
-                </div>
-              )}
-            </div>
 
-            <div className="mt-5 rounded-2xl border border-[#edf0f3] p-5">
-              <div className="text-xs font-medium uppercase tracking-[0.12em] text-gray-50">
-                Latest Withdraw Submit
+                <div className="rounded-2xl border border-[#edf0f3] p-5 lg:col-span-2">
+                  <div className="text-xs font-medium uppercase tracking-[0.12em] text-gray-50">
+                    Latest Withdraw Progress
+                  </div>
+                  {withdrawProgressResult ? (
+                    <div className="mt-3 space-y-4 text-sm text-black">
+                      <div>
+                        <div className="text-gray-50">Request Body</div>
+                        <pre className="mt-1 overflow-x-auto rounded-xl bg-[#fafbfc] p-3 text-xs text-black">
+                          {JSON.stringify(
+                            withdrawProgressResult.requestBody,
+                            null,
+                            2
+                          )}
+                        </pre>
+                      </div>
+                      <div>
+                        <div className="text-gray-50">Withdrawal Updates</div>
+                        <pre className="mt-1 overflow-x-auto rounded-xl bg-[#fafbfc] p-3 text-xs text-black">
+                          {JSON.stringify(
+                            withdrawProgressResult.updates,
+                            null,
+                            2
+                          )}
+                        </pre>
+                      </div>
+                      <div>
+                        <div className="text-gray-50">Raw Response</div>
+                        <pre className="mt-1 overflow-x-auto rounded-xl bg-[#fafbfc] p-3 text-xs text-black">
+                          {JSON.stringify(
+                            withdrawProgressResult.response,
+                            null,
+                            2
+                          )}
+                        </pre>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="mt-3 text-sm text-gray-50">
+                      No withdraw progress queried yet.
+                    </div>
+                  )}
+                </div>
               </div>
-              {withdrawSubmitResult ? (
-                <div className="mt-3 space-y-4 text-sm text-black">
-                  <div>
-                    <div className="text-gray-50">Request Body</div>
-                    <pre className="mt-1 overflow-x-auto rounded-xl bg-[#fafbfc] p-3 text-xs text-black">
-                      {JSON.stringify(
-                        withdrawSubmitResult.requestBody,
-                        null,
-                        2
-                      )}
-                    </pre>
-                  </div>
-                  <div>
-                    <div className="text-gray-50">Backend Response</div>
-                    <pre className="mt-1 overflow-x-auto rounded-xl bg-[#fafbfc] p-3 text-xs text-black">
-                      {JSON.stringify(withdrawSubmitResult.response, null, 2)}
-                    </pre>
-                  </div>
-                </div>
-              ) : (
-                <div className="mt-3 text-sm text-gray-50">
-                  No withdraw submission yet.
-                </div>
-              )}
             </div>
-
-            <div className="mt-5 rounded-2xl border border-[#edf0f3] p-5">
-              <div className="text-xs font-medium uppercase tracking-[0.12em] text-gray-50">
-                Latest Withdraw Progress
-              </div>
-              {withdrawProgressResult ? (
-                <div className="mt-3 space-y-4 text-sm text-black">
-                  <div>
-                    <div className="text-gray-50">Request Body</div>
-                    <pre className="mt-1 overflow-x-auto rounded-xl bg-[#fafbfc] p-3 text-xs text-black">
-                      {JSON.stringify(
-                        withdrawProgressResult.requestBody,
-                        null,
-                        2
-                      )}
-                    </pre>
-                  </div>
-                  <div>
-                    <div className="text-gray-50">Withdrawal Updates</div>
-                    <pre className="mt-1 overflow-x-auto rounded-xl bg-[#fafbfc] p-3 text-xs text-black">
-                      {JSON.stringify(withdrawProgressResult.updates, null, 2)}
-                    </pre>
-                  </div>
-                  <div>
-                    <div className="text-gray-50">Raw Response</div>
-                    <pre className="mt-1 overflow-x-auto rounded-xl bg-[#fafbfc] p-3 text-xs text-black">
-                      {JSON.stringify(withdrawProgressResult.response, null, 2)}
-                    </pre>
-                  </div>
-                </div>
-              ) : (
-                <div className="mt-3 text-sm text-gray-50">
-                  No withdraw progress queried yet.
-                </div>
-              )}
-            </div>
-          </section>
+          </details>
         </div>
       </div>
     </div>
