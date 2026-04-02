@@ -15,6 +15,11 @@ export const MENU_ITEMS: MenuItem[] = [
     path: "/lsd",
     paths: ["/lsd"],
   },
+  {
+    label: "HyperLiquid",
+    path: "/hyperliquid",
+    paths: ["/hyperliquid"],
+  },
 ];
 
 export function isMenuActive(pathname: string, menuItem: MenuItem): boolean {
