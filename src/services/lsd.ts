@@ -8,20 +8,20 @@ import { ethers } from "ethers";
 export const BSC_CHAIN_ID = "0x38"; // BSC mainnet chainId
 export const BSC_USDT_ADDRESS = "0x55d398326f99059fF775485246999027B3197955";
 // stg
-export const BSC_LSD_USDT_ADDRESS =
-  // "0xc350bafb46813dd23fd298c1caef96da4a4c1f2a"; // wormhole
-  "0x126c17744bd5cc918e0ec8b3afed2383fa7376e7"; // omni
-// prd
 // export const BSC_LSD_USDT_ADDRESS =
-//   "0x5382555840ef9f54ef6d3ee5da60f12bcabf4b87";
+// "0xc350bafb46813dd23fd298c1caef96da4a4c1f2a"; // wormhole
+// "0x126c17744bd5cc918e0ec8b3afed2383fa7376e7"; // omni
+// prd
+export const BSC_LSD_USDT_ADDRESS =
+  "0x5382555840ef9f54ef6d3ee5da60f12bcabf4b87";
 export const BSC_USDT_DECIMALS = 18;
 export const LSD_USDT_DECIMALS = 18;
 
 // NEAR config
-export const LSD_CONTRACT_ID = "lsd.stg.ref-dev-team.near"; // stg
-// export const LSD_CONTRACT_ID = "lsd-usdt.rhealab.near"; // prd
-export const BURROW_CONTRACT_ID = "br.private-mainnet.ref-dev-team.near"; // stg
-// export const BURROW_CONTRACT_ID = "contract.main.burrow.near"; // prd
+// export const LSD_CONTRACT_ID = "lsd.stg.ref-dev-team.near"; // stg
+export const LSD_CONTRACT_ID = "lsd-usdt.rhealab.near"; // prd
+// export const BURROW_CONTRACT_ID = "br.private-mainnet.ref-dev-team.near"; // stg
+export const BURROW_CONTRACT_ID = "contract.main.burrow.near"; // prd
 export const NEAR_USDT_ADDRESS = "usdt.tether-token.near";
 export const NEAR_USDT_DECIMALS = 6;
 export const OMNI_BNB_BRIDGE_ADDRESS =

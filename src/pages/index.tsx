@@ -31,12 +31,16 @@ type RequestLog = {
 type DebugInfo = {
   provider: {
     isCoinbaseWallet?: boolean;
+    isCoinbaseBrowser?: boolean;
     selectedAddress?: string;
     chainId?: string;
     networkVersion?: string;
     hasProvidersArray: boolean;
     providersCount: number;
     providerKeys: string[];
+    relayProviderType?: string;
+    relayType?: string;
+    diagnostic?: unknown;
   };
   request: {
     method: string;
@@ -52,6 +56,7 @@ const Lending = () => {
   const [ownerLoading, setOwnerLoading] = useState(false);
   const [signError, setSignError] = useState("");
   const [ownerError, setOwnerError] = useState("");
+  const [copiedKey, setCopiedKey] = useState("");
   const [signResult, setSignResult] = useState<SignResult | null>(null);
   const [ownerResult, setOwnerResult] = useState<OwnerResult | null>(null);
   const [requestLogs, setRequestLogs] = useState<RequestLog[]>([]);
@@ -149,10 +154,15 @@ const Lending = () => {
       };
     }
   };
-  const getProviderDebugInfo = (injected: any) => {
+  const getProviderDebugInfo = async (injected: any) => {
     const keys = Object.keys(injected || {}).sort();
+    const diagnostic =
+      typeof injected?.diagnostic === "function"
+        ? await injected.diagnostic()
+        : null;
     return {
       isCoinbaseWallet: injected?.isCoinbaseWallet,
+      isCoinbaseBrowser: injected?.isCoinbaseBrowser,
       selectedAddress: injected?.selectedAddress,
       chainId: injected?.chainId,
       networkVersion: injected?.networkVersion,
@@ -161,6 +171,9 @@ const Lending = () => {
         ? injected.providers.length
         : 0,
       providerKeys: keys,
+      relayProviderType: injected?._relayProvider?.constructor?.name,
+      relayType: injected?._relay?.constructor?.name,
+      diagnostic,
     };
   };
   const trackedRequest = async ({
@@ -223,7 +236,7 @@ const Lending = () => {
     setSignError("");
     try {
       const { injected, account } = await getInjectedProvider();
-      const message = "hello world";
+      const message = "one two three";
       const hexMessage = ethers.utils.hexlify(
         ethers.utils.toUtf8Bytes(message)
       );
@@ -234,7 +247,7 @@ const Lending = () => {
       });
       const decoded = tryDecodeInnerSignature(signature);
       setDebugInfo({
-        provider: getProviderDebugInfo(injected),
+        provider: await getProviderDebugInfo(injected),
         request: {
           method: "personal_sign",
           params: [hexMessage, account],
@@ -322,6 +335,42 @@ const Lending = () => {
       setOwnerLoading(false);
     }
   };
+  const handleCopy = async (key: string, value: string) => {
+    try {
+      if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(value);
+      } else if (typeof document !== "undefined") {
+        const textarea = document.createElement("textarea");
+        textarea.value = value;
+        textarea.setAttribute("readonly", "true");
+        textarea.style.position = "fixed";
+        textarea.style.opacity = "0";
+        textarea.style.pointerEvents = "none";
+        document.body.appendChild(textarea);
+        textarea.focus();
+        textarea.select();
+        document.execCommand("copy");
+        document.body.removeChild(textarea);
+      } else {
+        throw new Error("Clipboard is not available");
+      }
+      setCopiedKey(key);
+      window.setTimeout(() => {
+        setCopiedKey((current) => (current === key ? "" : current));
+      }, 1500);
+    } catch (error) {
+      console.error("copy failed", error);
+    }
+  };
+  const renderCopyButton = (key: string, value: string) => (
+    <button
+      type="button"
+      onClick={() => handleCopy(key, value)}
+      className="rounded-full border border-[#d8dee5] px-2 py-1 text-[10px] font-medium uppercase tracking-[0.08em] text-gray-50 transition-colors hover:bg-white"
+    >
+      {copiedKey === key ? "Copied" : "Copy"}
+    </button>
+  );
   const prettyLogs = useMemo(
     () =>
       requestLogs.map((log) => ({
@@ -340,7 +389,7 @@ const Lending = () => {
   return (
     <div className="relative">
       <LendingPage />
-      <div className="fixed bottom-6 right-6 z-20 w-[360px] max-w-[calc(100vw-32px)] rounded-3xl border border-[#d8dee5] bg-white/95 p-5 shadow-[0_20px_60px_rgba(15,23,42,0.16)] backdrop-blur">
+      <div className="fixed bottom-6 right-6 z-20 h-[70vh] w-[360px] max-w-[calc(100vw-32px)] overflow-y-auto rounded-3xl border border-[#d8dee5] bg-white/95 p-5 shadow-[0_20px_60px_rgba(15,23,42,0.16)] backdrop-blur">
         <div className="text-sm font-semibold uppercase tracking-[0.12em] text-gray-50">
           Base personal_sign
         </div>
@@ -375,30 +424,42 @@ const Lending = () => {
           </div>
         ) : null}
         {signResult ? (
-          <div className="mt-4 space-y-3 rounded-2xl border border-[#edf0f3] bg-[#fafbfc] p-4 text-sm text-black h-[80vh] overflow-y-auto">
+          <div className="mt-4 space-y-3 rounded-2xl border border-[#edf0f3] bg-[#fafbfc] p-4 text-sm text-black h-[30vh] overflow-y-auto">
             <div>
-              <div className="text-xs font-medium uppercase tracking-[0.12em] text-gray-50">
-                Account
+              <div className="flex items-center justify-between gap-3">
+                <div className="text-xs font-medium uppercase tracking-[0.12em] text-gray-50">
+                  Account
+                </div>
+                {renderCopyButton("sign-account", signResult.account)}
               </div>
               <div className="mt-1 break-all text-xs">{signResult.account}</div>
             </div>
             <div>
-              <div className="text-xs font-medium uppercase tracking-[0.12em] text-gray-50">
-                Message
+              <div className="flex items-center justify-between gap-3">
+                <div className="text-xs font-medium uppercase tracking-[0.12em] text-gray-50">
+                  Message
+                </div>
+                {renderCopyButton("sign-message", signResult.message)}
               </div>
               <div className="mt-1 break-all text-xs">{signResult.message}</div>
             </div>
             <div>
-              <div className="text-xs font-medium uppercase tracking-[0.12em] text-gray-50">
-                Hex Message
+              <div className="flex items-center justify-between gap-3">
+                <div className="text-xs font-medium uppercase tracking-[0.12em] text-gray-50">
+                  Hex Message
+                </div>
+                {renderCopyButton("sign-hex-message", signResult.hexMessage)}
               </div>
               <div className="mt-1 break-all text-xs">
                 {signResult.hexMessage}
               </div>
             </div>
             <div>
-              <div className="text-xs font-medium uppercase tracking-[0.12em] text-gray-50">
-                Signature
+              <div className="flex items-center justify-between gap-3">
+                <div className="text-xs font-medium uppercase tracking-[0.12em] text-gray-50">
+                  Signature
+                </div>
+                {renderCopyButton("sign-signature", signResult.signature)}
               </div>
               <div className="mt-1 break-all text-xs">
                 {signResult.signature}
@@ -407,18 +468,27 @@ const Lending = () => {
           </div>
         ) : null}
         {ownerResult ? (
-          <div className="mt-4 space-y-3 rounded-2xl border border-[#edf0f3] bg-[#fafbfc] p-4 text-sm text-black max-h-[60vh] overflow-y-auto">
+          <div className="mt-4 space-y-3 rounded-2xl border border-[#edf0f3] bg-[#fafbfc] p-4 text-sm text-black max-h-[30vh] overflow-y-auto">
             <div>
-              <div className="text-xs font-medium uppercase tracking-[0.12em] text-gray-50">
-                Owner Query Account
+              <div className="flex items-center justify-between gap-3">
+                <div className="text-xs font-medium uppercase tracking-[0.12em] text-gray-50">
+                  Owner Query Account
+                </div>
+                {renderCopyButton("owner-account", ownerResult.account)}
               </div>
               <div className="mt-1 break-all text-xs">
                 {ownerResult.account}
               </div>
             </div>
             <div>
-              <div className="text-xs font-medium uppercase tracking-[0.12em] text-gray-50">
-                nextOwnerIndex
+              <div className="flex items-center justify-between gap-3">
+                <div className="text-xs font-medium uppercase tracking-[0.12em] text-gray-50">
+                  nextOwnerIndex
+                </div>
+                {renderCopyButton(
+                  "owner-next-index",
+                  ownerResult.nextOwnerIndex
+                )}
               </div>
               <div className="mt-1 break-all text-xs">
                 {ownerResult.nextOwnerIndex}
@@ -434,22 +504,37 @@ const Lending = () => {
                     key={`${owner.index}-${owner.raw}`}
                     className="rounded-2xl border border-[#edf0f3] bg-white p-3"
                   >
-                    <div className="text-xs font-medium text-black">
-                      index {owner.index} · {owner.type}
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="text-xs font-medium text-black">
+                        index {owner.index} · {owner.type}
+                      </div>
+                      {renderCopyButton(`owner-raw-${owner.index}`, owner.raw)}
                     </div>
                     {owner.value ? (
                       <div className="mt-1 break-all text-xs text-gray-50">
-                        address: {owner.value}
+                        <div className="flex items-center justify-between gap-3">
+                          <span>address: {owner.value}</span>
+                          {renderCopyButton(
+                            `owner-value-${owner.index}`,
+                            owner.value
+                          )}
+                        </div>
                       </div>
                     ) : null}
                     {owner.x ? (
                       <div className="mt-1 break-all text-xs text-gray-50">
-                        x: {owner.x}
+                        <div className="flex items-center justify-between gap-3">
+                          <span>x: {owner.x}</span>
+                          {renderCopyButton(`owner-x-${owner.index}`, owner.x)}
+                        </div>
                       </div>
                     ) : null}
                     {owner.y ? (
                       <div className="mt-1 break-all text-xs text-gray-50">
-                        y: {owner.y}
+                        <div className="flex items-center justify-between gap-3">
+                          <span>y: {owner.y}</span>
+                          {renderCopyButton(`owner-y-${owner.index}`, owner.y)}
+                        </div>
                       </div>
                     ) : null}
                     {typeof owner.length === "number" ? (
@@ -467,9 +552,15 @@ const Lending = () => {
           </div>
         ) : null}
         {debugInfo ? (
-          <div className="mt-4 rounded-2xl border border-[#edf0f3] bg-[#fafbfc] p-4 text-sm text-black max-h-[60vh] overflow-y-auto">
+          <div className="mt-4 rounded-2xl border border-[#edf0f3] bg-[#fafbfc] p-4 text-sm text-black max-h-[30vh] overflow-y-auto">
             <div className="text-xs font-medium uppercase tracking-[0.12em] text-gray-50">
-              Debug Info
+              <div className="flex items-center justify-between gap-3">
+                <span>Debug Info</span>
+                {renderCopyButton(
+                  "debug-info",
+                  JSON.stringify(debugInfo, null, 2)
+                )}
+              </div>
             </div>
             <pre className="mt-3 whitespace-pre-wrap break-all text-[11px]">
               {JSON.stringify(debugInfo, null, 2)}
@@ -477,7 +568,7 @@ const Lending = () => {
           </div>
         ) : null}
         {prettyLogs.length ? (
-          <div className="mt-4 rounded-2xl border border-[#edf0f3] bg-[#fafbfc] p-4 text-sm text-black max-h-[60vh] overflow-y-auto">
+          <div className="mt-4 rounded-2xl border border-[#edf0f3] bg-[#fafbfc] p-4 text-sm text-black max-h-[30vh] overflow-y-auto">
             <div className="text-xs font-medium uppercase tracking-[0.12em] text-gray-50">
               Provider Request Logs
             </div>
@@ -487,15 +578,25 @@ const Lending = () => {
                   key={log.id}
                   className="rounded-2xl border border-[#edf0f3] bg-white p-3"
                 >
-                  <div className="text-xs font-medium text-black">
-                    {log.method}
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="text-xs font-medium text-black">
+                      {log.method}
+                    </div>
+                    {renderCopyButton(
+                      `log-all-${log.id}`,
+                      JSON.stringify(log, null, 2)
+                    )}
                   </div>
                   <div className="mt-1 text-[11px] text-gray-50">
                     {log.timestamp}
                   </div>
                   <div className="mt-2">
-                    <div className="text-[11px] font-medium uppercase tracking-[0.08em] text-gray-50">
-                      Params
+                    <div className="flex items-center justify-between gap-3 text-[11px] font-medium uppercase tracking-[0.08em] text-gray-50">
+                      <span>Params</span>
+                      {renderCopyButton(
+                        `log-params-${log.id}`,
+                        log.params ?? "undefined"
+                      )}
                     </div>
                     <pre className="mt-1 whitespace-pre-wrap break-all text-[11px]">
                       {log.params ?? "undefined"}
@@ -503,8 +604,9 @@ const Lending = () => {
                   </div>
                   {typeof log.result !== "undefined" ? (
                     <div className="mt-2">
-                      <div className="text-[11px] font-medium uppercase tracking-[0.08em] text-gray-50">
-                        Result
+                      <div className="flex items-center justify-between gap-3 text-[11px] font-medium uppercase tracking-[0.08em] text-gray-50">
+                        <span>Result</span>
+                        {renderCopyButton(`log-result-${log.id}`, log.result)}
                       </div>
                       <pre className="mt-1 whitespace-pre-wrap break-all text-[11px]">
                         {log.result}
@@ -513,8 +615,9 @@ const Lending = () => {
                   ) : null}
                   {log.error ? (
                     <div className="mt-2">
-                      <div className="text-[11px] font-medium uppercase tracking-[0.08em] text-[#b91c1c]">
-                        Error
+                      <div className="flex items-center justify-between gap-3 text-[11px] font-medium uppercase tracking-[0.08em] text-[#b91c1c]">
+                        <span>Error</span>
+                        {renderCopyButton(`log-error-${log.id}`, log.error)}
                       </div>
                       <pre className="mt-1 whitespace-pre-wrap break-all text-[11px] text-[#b91c1c]">
                         {log.error}

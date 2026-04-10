@@ -6,23 +6,12 @@ import LSDPageOmni from "../components/lsd/goOmni";
 type TabId = "wormhole" | "intents" | "omni";
 
 const LSD = () => {
-  const [tab, setTab] = useState<TabId>("omni");
+  const [tab, setTab] = useState<TabId>("intents");
 
   return (
     <div className="min-h-screen">
       <div className="container mx-auto px-6 py-4 max-w-2xl">
         <div className="flex gap-2 mb-4 rounded-xl bg-gray-80 p-1">
-          <button
-            type="button"
-            onClick={() => setTab("omni")}
-            className={`flex-1 py-2.5 rounded-lg text-sm font-medium transition-colors ${
-              tab === "omni"
-                ? "bg-white text-black shadow-sm"
-                : "text-gray-50 hover:text-black"
-            }`}
-          >
-            Omni
-          </button>
           {/* <button
             type="button"
             onClick={() => setTab("wormhole")}
@@ -44,6 +33,17 @@ const LSD = () => {
             }`}
           >
             Intents
+          </button>
+          <button
+            type="button"
+            onClick={() => setTab("omni")}
+            className={`flex-1 py-2.5 rounded-lg text-sm font-medium transition-colors ${
+              tab === "omni"
+                ? "bg-white text-black shadow-sm"
+                : "text-gray-50 hover:text-black"
+            }`}
+          >
+            Omni
           </button>
         </div>
       </div>

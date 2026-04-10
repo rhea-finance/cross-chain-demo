@@ -315,22 +315,22 @@ export const INTENTS_TOKENS: IIntentsTokens = {
   },
   NRUSDT: {
     near: {
-      assetId: "xxxxxxx",
-      decimals: 6,
+      assetId: "1cs_v1:near:nep141:lsd-usdt.rhealab.near",
+      decimals: 18,
       blockchain: "near",
       symbol: "nrUsdt",
       price: 1,
-      priceUpdatedAt: "2025-10-25T00:23:30.120Z",
+      priceUpdatedAt: "2026-04-10T14:04:30.231Z",
       contractAddress: "lsd-usdt.rhealab.near",
     },
     evm: {
       BSC: {
-        assetId: "xxxxxxxxx",
+        assetId: "1cs_v1:bsc:bep20:0x5382555840ef9f54ef6d3ee5da60f12bcabf4b87",
         decimals: 18,
         blockchain: "bsc",
         symbol: "nrUsdt",
         price: 1,
-        priceUpdatedAt: "2025-10-25T00:23:30.120Z",
+        priceUpdatedAt: "2026-04-10T14:04:30.231Z",
         contractAddress: "0x5382555840ef9f54ef6d3ee5da60f12bcabf4b87",
       },
     },
