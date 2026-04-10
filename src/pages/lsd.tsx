@@ -23,7 +23,7 @@ const LSD = () => {
           >
             Wormhole
           </button> */}
-          <button
+          {/* <button
             type="button"
             onClick={() => setTab("intents")}
             className={`flex-1 py-2.5 rounded-lg text-sm font-medium transition-colors ${
@@ -33,8 +33,8 @@ const LSD = () => {
             }`}
           >
             Intents
-          </button>
-          <button
+          </button> */}
+          {/* <button
             type="button"
             onClick={() => setTab("omni")}
             className={`flex-1 py-2.5 rounded-lg text-sm font-medium transition-colors ${
@@ -44,7 +44,7 @@ const LSD = () => {
             }`}
           >
             Omni
-          </button>
+          </button> */}
         </div>
       </div>
       <div className="container mx-auto px-6 max-w-2xl">
@@ -53,13 +53,14 @@ const LSD = () => {
           required!
         </div>
       </div>
-      {tab === "wormhole" ? (
+      <LSDPageIntents />
+      {/* {tab === "wormhole" ? (
         <LSDPage />
       ) : tab === "intents" ? (
         <LSDPageIntents />
       ) : (
         <LSDPageOmni />
-      )}
+      )} */}
     </div>
   );
 };

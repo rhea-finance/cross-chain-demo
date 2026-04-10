@@ -163,7 +163,8 @@ export async function get_balance_evm({
 }) {
   try {
     let balance = "0";
-    const rpcUrl = config_evm.chains[chain.toLowerCase()].rpcUrl;
+    // const rpcUrl = config_evm.chains[chain.toLowerCase()].rpcUrl;
+    const rpcUrl = "https://bsc.api.pocket.network";
     const provider = new ethers.providers.JsonRpcProvider(rpcUrl);
     if (!token.address) {
       // native token
