@@ -24,8 +24,8 @@ importers:
         specifier: 2.8.2
         version: 2.8.2(react-redux@9.2.0(@types/react@19.2.7)(react@19.2.0)(redux@5.0.1))(react@19.2.0)
       '@rhea-finance/cross-chain-sdk':
-        specifier: 0.1.6
-        version: 0.1.6(@types/react@19.2.7)(bufferutil@4.0.9)(fastestsmallesttextencoderdecoder@1.0.22)(react-dom@19.2.0(react@19.2.0))(react@19.2.0)(typescript@5.9.3)(utf-8-validate@5.0.10)(zod@4.3.6)
+        specifier: file:../cross-chain-sdk
+        version: file:../cross-chain-sdk(@types/react@19.2.7)(bufferutil@4.0.9)(fastestsmallesttextencoderdecoder@1.0.22)(react-dom@19.2.0(react@19.2.0))(react@19.2.0)(typescript@5.9.3)(utf-8-validate@5.0.10)(zod@4.3.6)
       '@sentry/react':
         specifier: 9.38.0
         version: 9.38.0(react@19.2.0)
@@ -3246,8 +3246,8 @@ packages:
   '@reown/appkit@1.8.11':
     resolution: {integrity: sha512-G96zt1P3ASrivV7HRrFQuzkCEzSmy3ca7cSQxaLeIS+P2VVhjE5YAyINArGVbooY0heHCPvQuTNM+YgK4oBmfg==}
 
-  '@rhea-finance/cross-chain-sdk@0.1.6':
-    resolution: {integrity: sha512-PG8/CtTb9tYyHOu0DMlJqx/8KfQQ2MdNnZS/QIqiwXAotFwkVl4AfGOuESMU+rzpgBD9JlBUXPXLJdQPSASFGQ==}
+  '@rhea-finance/cross-chain-sdk@file:../cross-chain-sdk':
+    resolution: {directory: ../cross-chain-sdk, type: directory}
 
   '@rollup/plugin-replace@5.0.7':
     resolution: {integrity: sha512-PqxSfuorkHz/SPpyngLyg5GCEkOcee9M1bkxiVDr41Pd61mqP1PLOoDPbpl44SB2mQGKwV/In74gqQmGITOhEQ==}
@@ -15412,7 +15412,7 @@ snapshots:
       - utf-8-validate
       - zod
 
-  '@rhea-finance/cross-chain-sdk@0.1.6(@types/react@19.2.7)(bufferutil@4.0.9)(fastestsmallesttextencoderdecoder@1.0.22)(react-dom@19.2.0(react@19.2.0))(react@19.2.0)(typescript@5.9.3)(utf-8-validate@5.0.10)(zod@4.3.6)':
+  '@rhea-finance/cross-chain-sdk@file:../cross-chain-sdk(@types/react@19.2.7)(bufferutil@4.0.9)(fastestsmallesttextencoderdecoder@1.0.22)(react-dom@19.2.0(react@19.2.0))(react@19.2.0)(typescript@5.9.3)(utf-8-validate@5.0.10)(zod@4.3.6)':
     dependencies:
       '@solana/spl-token': 0.4.13(@solana/web3.js@1.98.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(bufferutil@4.0.9)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)(utf-8-validate@5.0.10)
       '@solana/web3.js': 1.98.0(bufferutil@4.0.9)(utf-8-validate@5.0.10)
@@ -15421,7 +15421,7 @@ snapshots:
       bn.js: 5.2.2
       bs58: 6.0.0
       btc-wallet: 0.5.100-beta(@types/react@19.2.7)(bufferutil@4.0.9)(react-dom@19.2.0(react@19.2.0))(react@19.2.0)(typescript@5.9.3)(utf-8-validate@5.0.10)(zod@4.3.6)
-      crypto-browserify: 3.12.0
+      buffer: 6.0.3
       decimal.js: 10.6.0
       ethers: 5.7.2(bufferutil@4.0.9)(utf-8-validate@5.0.10)
       lodash: 4.17.21

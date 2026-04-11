@@ -1,32 +1,89 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { Icon } from "@iconify/react";
 import useWalletConnect from "@/hooks/useWalletConnect";
-import { get_balance_evm } from "@/services/chains/evm";
 import { Img } from "@/components/common/img";
-import {
-  formatErrorMessage,
-  getAccountIdUi,
-  parseAmount,
-  formatAmount,
-} from "@/utils/chainsUtil";
+import { formatErrorMessage, getAccountIdUi } from "@/utils/chainsUtil";
 import { EVM_CHAINS } from "@/services/chainConfig";
 import {
   BSC_CHAIN_ID,
-  BSC_USDT_ADDRESS,
-  BSC_LSD_USDT_ADDRESS,
-  BSC_USDT_DECIMALS,
-  LSD_USDT_DECIMALS,
-  NEAR_USDT_DECIMALS,
-  calculateLsdFromUsdt,
-  LSD_CONTRACT_ID,
-  calculateUsdtFromLsd,
-} from "@/services/lsd";
-import { intentsQuotationUi } from "@/services/lending/actions/commonAction";
+  getLsdBalances,
+  pollLsdIntentsTransactionStatus,
+  prepareLsdSupplyByIntents,
+  prepareLsdWithdrawByIntents,
+  quoteLsdSupplyByIntents,
+  quoteLsdWithdrawByIntents,
+} from "@rhea-finance/cross-chain-sdk";
 import { transfer_evm } from "@/services/chains/evm";
-import { pollingTransactionStatus } from "@rhea-finance/cross-chain-sdk";
 import failToast from "@/components/common/toast/failToast";
-import Big from "big.js";
 import { beautifyNumber } from "@/utils/beautifyNumber";
+
+type FlowProgress = {
+  status: "loading" | "success" | "error";
+  message: string;
+};
+
+type IntentsBridgeStatus = "not_started" | "polling" | "success" | string;
+
+const getPrepareStageProgressText = (
+  action: "Supply" | "Withdraw",
+  stage: string
+) => {
+  switch (stage) {
+    case "quoting_origin":
+      return `${action}: requesting origin quote...`;
+    case "calculating_lsd":
+      return `${action}: calculating LSD route amount...`;
+    case "quoting_return":
+      return `${action}: requesting return quote...`;
+    case "completed":
+      return `${action}: route prepared. Waiting for wallet confirmation...`;
+    case "failed":
+      return `${action}: route preparation failed`;
+    default:
+      return `${action}: preparing route...`;
+  }
+};
+
+const getBridgePollingProgressText = ({
+  action,
+  originStatus,
+  returnStatus,
+}: {
+  action: "Supply" | "Withdraw";
+  originStatus: IntentsBridgeStatus;
+  returnStatus: IntentsBridgeStatus;
+}) => {
+  return `${action}: waiting for Intents settlement...\nOrigin bridge: ${originStatus}\nReturn bridge: ${returnStatus}`;
+};
+
+const renderFlowProgress = (progress: FlowProgress | null) => {
+  if (!progress) return null;
+
+  return (
+    <div
+      className={`flex items-start gap-2 rounded-lg px-3 py-2 text-sm ${
+        progress.status === "error"
+          ? "bg-red-10/10 text-red-500"
+          : progress.status === "success"
+          ? "bg-green-10/10 text-green-700"
+          : "bg-gray-80 text-gray-50"
+      }`}
+    >
+      {progress.status === "loading" && (
+        <Icon icon="svg-spinners:ring-resize" className="mt-0.5 h-4 w-4" />
+      )}
+      {progress.status === "success" && (
+        <Icon icon="mdi:check-circle-outline" className="mt-0.5 h-4 w-4" />
+      )}
+      {progress.status === "error" && (
+        <Icon icon="mdi:alert-circle-outline" className="mt-0.5 h-4 w-4" />
+      )}
+      <span className="break-words whitespace-pre-line">
+        {progress.message}
+      </span>
+    </div>
+  );
+};
 
 const LSDPage = () => {
   const { evm } = useWalletConnect();
@@ -49,6 +106,12 @@ const LSDPage = () => {
 
   const [isSupplying, setIsSupplying] = useState(false);
   const [isWithdrawing, setIsWithdrawing] = useState(false);
+  const [supplyProgress, setSupplyProgress] = useState<FlowProgress | null>(
+    null
+  );
+  const [withdrawProgress, setWithdrawProgress] = useState<FlowProgress | null>(
+    null
+  );
   const bscAccountId = evm.accountId;
 
   // Auto switch to BSC chain when EVM wallet is connected
@@ -70,29 +133,12 @@ const LSDPage = () => {
     }
 
     try {
-      // Fetch USDT balance
-      const usdtBalance = await get_balance_evm({
-        userAddress: accountId,
-        chain: "bsc",
-        token: {
-          symbol: "USDT",
-          address: BSC_USDT_ADDRESS,
-          decimals: BSC_USDT_DECIMALS,
-        },
+      const balances = await getLsdBalances({
+        accountAddress: accountId,
+        rpcUrl: "https://bsc.api.pocket.network",
       });
-      setBscUsdtBalance(usdtBalance || "0");
-
-      // Fetch lsdUSDT balance
-      const lsdBalance = await get_balance_evm({
-        userAddress: accountId,
-        chain: "bsc",
-        token: {
-          symbol: "lsdUSDT",
-          address: BSC_LSD_USDT_ADDRESS,
-          decimals: LSD_USDT_DECIMALS,
-        },
-      });
-      setBscLsdUsdtBalance(lsdBalance || "0");
+      setBscUsdtBalance(balances.usdt || "0");
+      setBscLsdUsdtBalance(balances.lsdUsdt || "0");
     } catch (error) {
       console.error("Failed to fetch balances:", error);
       setBscUsdtBalance("0");
@@ -127,75 +173,20 @@ const LSDPage = () => {
       try {
         setIsSupplyQuoteLoading(true);
         setSupplyQuoteError(null);
-        let bridgeFee = new Big(0);
-        // Step1: get usdt amount from bsc chain to near chain for usdt token
-        const quoteResult1 = await intentsQuotationUi({
-          chain: "evm",
-          symbol: "USDT",
-          selectedEvmChain: "BSC",
-          amount: parseAmount(supplyAmount, BSC_USDT_DECIMALS),
-          refundTo: bscAccountId,
-          recipient: LSD_CONTRACT_ID,
-          outChainToNearChain: true,
+        // the BSC USDT -> NEAR LSD -> BSC lsdUSDT quote chain.
+        const quote = await quoteLsdSupplyByIntents({
+          accountAddress: bscAccountId,
+          amount: supplyAmount,
         });
-
-        if (
-          quoteResult1?.quoteStatus !== "success" ||
-          !quoteResult1?.quoteSuccessResult?.quote
-        ) {
-          const errorMessage =
-            quoteResult1?.message || "Failed to get Intents quote for supply";
-          setSupplyQuoteError(errorMessage);
-          return;
-        }
-        bridgeFee = new Big(
-          quoteResult1.quoteSuccessResult.quote.amountInUsd
-        ).minus(new Big(quoteResult1.quoteSuccessResult.quote.amountOutUsd));
-
-        // Get amountOut from quote result
-        const { amountOut, minAmountOut } =
-          quoteResult1.quoteSuccessResult.quote;
-        const amountOutReadable = formatAmount(
-          minAmountOut,
-          NEAR_USDT_DECIMALS
-        );
-        // step2: Calculate estimated lsdUSDT for supply based on quote result
-        const lsdAmount = await calculateLsdFromUsdt(amountOutReadable);
-
-        // step3: get lsd amount from near chain to bsc chain for lsd token
-        const quoteResult2 = await intentsQuotationUi({
-          chain: "evm",
-          symbol: "NRUSDT",
-          selectedEvmChain: "BSC",
-          amount: lsdAmount,
-          refundTo: LSD_CONTRACT_ID,
-          recipient: bscAccountId,
-          outChainToNearChain: false,
-        });
-        if (
-          quoteResult2?.quoteStatus !== "success" ||
-          !quoteResult2?.quoteSuccessResult?.quote
-        ) {
-          const errorMessage =
-            quoteResult2?.message || "Failed to get Intents quote for supply";
-          setSupplyQuoteError(errorMessage);
-          return;
-        }
-        bridgeFee = bridgeFee.plus(
-          new Big(quoteResult2.quoteSuccessResult.quote.amountInUsd).minus(
-            new Big(quoteResult2.quoteSuccessResult.quote.amountOutUsd)
-          )
-        );
-
-        const { amountOutFormatted: amountOutFormatted2 } =
-          quoteResult2.quoteSuccessResult.quote;
-        setEstReceiveLsd(amountOutFormatted2);
-        setSupplyBridgeFee(bridgeFee.toFixed());
+        setEstReceiveLsd(quote.estimatedReceive || "0");
+        setSupplyBridgeFee(quote.bridgeFeeUsd);
       } catch (error) {
         console.error("Failed to get supply quote:", error);
         const errorMessage =
           error instanceof Error ? error.message : "Failed to get quote";
         setSupplyQuoteError(errorMessage);
+        setEstReceiveLsd("0");
+        setSupplyBridgeFee(null);
       } finally {
         setIsSupplyQuoteLoading(false);
       }
@@ -219,71 +210,13 @@ const LSDPage = () => {
       try {
         setIsWithdrawQuoteLoading(true);
         setWithdrawQuoteError(null);
-        let bridgeFee = new Big(0);
-        // Step1: get lsd amount from bsc chain to near chain for lsd token
-        const quoteResult1 = await intentsQuotationUi({
-          chain: "evm",
-          symbol: "NRUSDT",
-          selectedEvmChain: "BSC",
-          amount: parseAmount(costAmount, LSD_USDT_DECIMALS),
-          refundTo: bscAccountId,
-          recipient: LSD_CONTRACT_ID,
-          outChainToNearChain: true,
+        // the BSC lsdUSDT -> NEAR USDT -> BSC USDT quote chain.
+        const quote = await quoteLsdWithdrawByIntents({
+          accountAddress: bscAccountId,
+          amount: costAmount,
         });
-
-        if (
-          quoteResult1?.quoteStatus !== "success" ||
-          !quoteResult1?.quoteSuccessResult?.quote
-        ) {
-          const errorMessage =
-            quoteResult1?.message || "Failed to get Intents quote for withdraw";
-          setWithdrawQuoteError(errorMessage);
-          setEstReceiveUsdt("0");
-          setWithdrawBridgeFee(null);
-          return;
-        }
-        bridgeFee = new Big(
-          quoteResult1.quoteSuccessResult.quote.amountInUsd
-        ).minus(new Big(quoteResult1.quoteSuccessResult.quote.amountOutUsd));
-
-        // Step2: get usdt amount from near chain to bsc chain for usdt token
-        const { minAmountOut } = quoteResult1.quoteSuccessResult.quote;
-        const minAmountOutReadable = formatAmount(
-          minAmountOut,
-          LSD_USDT_DECIMALS
-        );
-        const usdtAmount = await calculateUsdtFromLsd(minAmountOutReadable);
-
-        // Step3: Get Intents quote (NEAR USDT -> BSC USDT) for estimated receive
-        const quoteResult2 = await intentsQuotationUi({
-          chain: "evm",
-          symbol: "USDT",
-          selectedEvmChain: "BSC",
-          amount: usdtAmount,
-          refundTo: LSD_CONTRACT_ID,
-          recipient: bscAccountId,
-          outChainToNearChain: false,
-        });
-        if (
-          quoteResult2?.quoteStatus !== "success" ||
-          !quoteResult2?.quoteSuccessResult?.quote
-        ) {
-          const errorMessage =
-            quoteResult2?.message || "Failed to get Intents quote for withdraw";
-          setWithdrawQuoteError(errorMessage);
-          setEstReceiveUsdt("0");
-          setWithdrawBridgeFee(null);
-          return;
-        }
-        bridgeFee = bridgeFee.plus(
-          new Big(quoteResult2.quoteSuccessResult.quote.amountInUsd).minus(
-            new Big(quoteResult2.quoteSuccessResult.quote.amountOutUsd)
-          )
-        );
-
-        const { amountOutFormatted } = quoteResult2.quoteSuccessResult.quote;
-        setEstReceiveUsdt(amountOutFormatted ?? "0");
-        setWithdrawBridgeFee(bridgeFee.toFixed());
+        setEstReceiveUsdt(quote.estimatedReceive || "0");
+        setWithdrawBridgeFee(quote.bridgeFeeUsd);
       } catch (error) {
         console.error("Failed to get withdraw quote:", error);
         const errorMessage =
@@ -307,101 +240,113 @@ const LSDPage = () => {
       return;
     }
     setIsSupplying(true);
+    setSupplyProgress({
+      status: "loading",
+      message: "Supply: preparing route...",
+    });
     try {
-      // Step1: get usdt amount from bsc chain to near chain for usdt token
-      const quoteResult1 = await intentsQuotationUi({
-        chain: "evm",
-        symbol: "USDT",
-        selectedEvmChain: "BSC",
-        amount: parseAmount(supplyAmount, BSC_USDT_DECIMALS),
-        refundTo: bscAccountId,
-        recipient: LSD_CONTRACT_ID,
-        outChainToNearChain: true,
+      // prepareLsdSupplyByIntents returns the final transfer data after the multi-leg Intents route is prepared.
+      const prepared = await prepareLsdSupplyByIntents({
+        accountAddress: bscAccountId,
+        amount: supplyAmount,
+        onStatusChange: (stage) => {
+          console.log("LSD supply prepare stage:", stage);
+          setSupplyProgress({
+            status: stage === "failed" ? "error" : "loading",
+            message: getPrepareStageProgressText("Supply", stage),
+          });
+        },
       });
 
-      if (
-        quoteResult1?.quoteStatus !== "success" ||
-        !quoteResult1?.quoteSuccessResult?.quote
-      ) {
-        const errorMessage =
-          quoteResult1?.message || "Failed to get Intents quote";
-        failToast({ failText: errorMessage });
-        return;
-      }
-      const { amountOut, minAmountOut } = quoteResult1.quoteSuccessResult.quote;
-
-      // Step2: calculate lsd amount from usdt amount
-      const lsdAmount = await calculateLsdFromUsdt(
-        formatAmount(minAmountOut, NEAR_USDT_DECIMALS)
-      );
-
-      // Step3: get deposit address from near chain to bsc chain for lsd token
-      const quoteResult2 = await intentsQuotationUi({
-        chain: "evm",
-        symbol: "NRUSDT",
-        selectedEvmChain: "BSC",
-        amount: lsdAmount,
-        refundTo: LSD_CONTRACT_ID,
-        recipient: bscAccountId,
-        outChainToNearChain: false,
-      });
-      if (
-        quoteResult2?.quoteStatus !== "success" ||
-        !quoteResult2?.quoteSuccessResult?.quote
-      ) {
-        const errorMessage =
-          quoteResult2?.message || "Failed to get Intents quote";
-        failToast({ failText: errorMessage });
-        return;
-      }
-      const { depositAddress: depositAddress2 } =
-        quoteResult2.quoteSuccessResult.quote;
-
-      // Step4: get deposit address from bsc chain to near chain for usdt token
-      const quoteResult3 = await intentsQuotationUi({
-        chain: "evm",
-        symbol: "USDT",
-        selectedEvmChain: "BSC",
-        amount: parseAmount(supplyAmount, BSC_USDT_DECIMALS),
-        refundTo: bscAccountId,
-        recipient: LSD_CONTRACT_ID,
-        outChainToNearChain: true,
-        customRecipientMsg: depositAddress2,
-      });
-      if (
-        quoteResult3?.quoteStatus !== "success" ||
-        !quoteResult3?.quoteSuccessResult?.quote
-      ) {
-        const errorMessage =
-          quoteResult3?.message || "Failed to get Intents quote";
-        failToast({ failText: errorMessage });
+      if (prepared.status !== "success" || !prepared.transferData) {
+        setSupplyProgress({
+          status: "error",
+          message: prepared.message || "Supply: failed to prepare transaction",
+        });
+        failToast({
+          failText: prepared.message || "Failed to prepare supply transaction",
+        });
         return;
       }
 
-      // Step5: transfer usdt from bsc chain to near chain for usdt token
-      const { depositAddress: depositAddress, amountIn } =
-        quoteResult3.quoteSuccessResult.quote;
+      const { intentsDepositAddresses, transferData } = prepared;
 
-      const txHash = await transfer_evm({
-        tokenAddress: BSC_USDT_ADDRESS,
-        depositAddress: depositAddress,
-        chain: "bsc",
-        amount: amountIn,
+      if (!intentsDepositAddresses) {
+        setSupplyProgress({
+          status: "error",
+          message: "Supply: missing Intents deposit addresses",
+        });
+        failToast({ failText: "Missing Intents deposit addresses" });
+        return;
+      }
+
+      // executes the actual BSC wallet transfer.
+      setSupplyProgress({
+        status: "loading",
+        message: "Supply: waiting for wallet transfer confirmation...",
+      });
+      await transfer_evm({
+        tokenAddress: transferData.tokenAddress,
+        depositAddress: transferData.depositAddress,
+        chain: transferData.chain,
+        amount: transferData.amount,
       });
 
-      // Step6: Poll transaction status
-      const { status } = await pollingTransactionStatus(depositAddress);
+      // poll both Intents legs until the LSD supply route settles.
+      setSupplyProgress({
+        status: "loading",
+        message: getBridgePollingProgressText({
+          action: "Supply",
+          originStatus: "polling",
+          returnStatus: "not_started",
+        }),
+      });
+      const originStatus = await pollLsdIntentsTransactionStatus({
+        depositAddress: intentsDepositAddresses.originDepositAddress,
+      });
 
-      if (status === "success") {
+      if (originStatus.status !== "success") {
+        throw new Error(
+          `Origin bridge status: ${originStatus.status}, return bridge status: not_started`
+        );
+      }
+
+      setSupplyProgress({
+        status: "loading",
+        message: getBridgePollingProgressText({
+          action: "Supply",
+          originStatus: originStatus.status,
+          returnStatus: "polling",
+        }),
+      });
+      const returnStatus = await pollLsdIntentsTransactionStatus({
+        depositAddress: intentsDepositAddresses.returnDepositAddress,
+      });
+
+      if (returnStatus.status === "success") {
         console.log("Supply transaction completed successfully");
         // Refresh balances
         await fetchBalances();
+        setSupplyProgress({
+          status: "success",
+          message: `${getBridgePollingProgressText({
+            action: "Supply",
+            originStatus: originStatus.status,
+            returnStatus: returnStatus.status,
+          })}\nSupply completed. Balances refreshed.`,
+        });
       } else {
-        throw new Error(`Transaction status: ${status}`);
+        throw new Error(
+          `Origin bridge status: ${originStatus.status}, return bridge status: ${returnStatus.status}`
+        );
       }
     } catch (error) {
       const errorMessage =
         error instanceof Error ? error.message : String(error);
+      setSupplyProgress({
+        status: "error",
+        message: `Supply failed: ${formatErrorMessage(errorMessage)}`,
+      });
       failToast({ failText: formatErrorMessage(errorMessage) });
     } finally {
       setIsSupplying(false);
@@ -414,105 +359,117 @@ const LSDPage = () => {
     }
 
     setIsWithdrawing(true);
+    setWithdrawProgress({
+      status: "loading",
+      message: "Withdraw: preparing route...",
+    });
 
     try {
       console.log("Start Withdraw Process", { amount: costAmount });
-      // Step1: get lsd amount from bsc chain to near chain for lsd token
-      const lsdAmount = parseAmount(costAmount, LSD_USDT_DECIMALS);
-      const quoteResult1 = await intentsQuotationUi({
-        chain: "evm",
-        symbol: "NRUSDT",
-        selectedEvmChain: "BSC",
-        amount: lsdAmount,
-        refundTo: bscAccountId,
-        recipient: LSD_CONTRACT_ID,
-        outChainToNearChain: true,
+      // returns the final transfer data after the multi-leg Intents route is prepared.
+      const prepared = await prepareLsdWithdrawByIntents({
+        accountAddress: bscAccountId,
+        amount: costAmount,
+        onStatusChange: (stage) => {
+          console.log("LSD withdraw prepare stage:", stage);
+          setWithdrawProgress({
+            status: stage === "failed" ? "error" : "loading",
+            message: getPrepareStageProgressText("Withdraw", stage),
+          });
+        },
       });
 
-      if (
-        quoteResult1?.quoteStatus !== "success" ||
-        !quoteResult1?.quoteSuccessResult?.quote
-      ) {
-        const errorMessage =
-          quoteResult1?.message || "Failed to get Intents quote";
-        failToast({ failText: errorMessage });
-        return;
-      }
-      // Step2: get usdt amount from near chain to bsc chain for usdt token
-      const { amountOut, minAmountOut } = quoteResult1.quoteSuccessResult.quote;
-      const usdtAmount = await calculateUsdtFromLsd(
-        formatAmount(minAmountOut, LSD_USDT_DECIMALS)
-      );
-
-      // Step3: Get Intents deposit address (NEAR USDT -> BSC USDT)
-      const quoteResult2 = await intentsQuotationUi({
-        chain: "evm",
-        symbol: "USDT",
-        selectedEvmChain: "BSC",
-        amount: usdtAmount,
-        refundTo: LSD_CONTRACT_ID,
-        recipient: bscAccountId,
-        outChainToNearChain: false,
-      });
-
-      if (
-        quoteResult2?.quoteStatus !== "success" ||
-        !quoteResult2?.quoteSuccessResult?.quote
-      ) {
-        const errorMessage =
-          quoteResult2?.message || "Failed to get Intents quote for withdraw";
-        failToast({ failText: errorMessage });
+      if (prepared.status !== "success" || !prepared.transferData) {
+        setWithdrawProgress({
+          status: "error",
+          message:
+            prepared.message || "Withdraw: failed to prepare transaction",
+        });
+        failToast({
+          failText:
+            prepared.message || "Failed to prepare withdraw transaction",
+        });
         return;
       }
 
-      const { depositAddress: depositAddress2 } =
-        quoteResult2.quoteSuccessResult.quote;
+      const { intentsDepositAddresses, transferData } = prepared;
 
-      // Step3: get deposit address from bsc chain to near chain for usdt token
-      const quoteResult3 = await intentsQuotationUi({
-        chain: "evm",
-        symbol: "NRUSDT",
-        selectedEvmChain: "BSC",
-        amount: lsdAmount,
-        refundTo: bscAccountId,
-        recipient: LSD_CONTRACT_ID,
-        outChainToNearChain: true,
-        customRecipientMsg: depositAddress2,
-      });
-
-      if (
-        quoteResult3?.quoteStatus !== "success" ||
-        !quoteResult3?.quoteSuccessResult?.quote
-      ) {
-        const errorMessage =
-          quoteResult3?.message || "Failed to get Intents quote";
-        failToast({ failText: errorMessage });
+      if (!intentsDepositAddresses) {
+        setWithdrawProgress({
+          status: "error",
+          message: "Withdraw: missing Intents deposit addresses",
+        });
+        failToast({ failText: "Missing Intents deposit addresses" });
         return;
       }
-      // Step4: transfer usdt from bsc chain to near chain for usdt token
-      const { depositAddress, amountIn } =
-        quoteResult3.quoteSuccessResult.quote;
 
-      const txHash = await transfer_evm({
-        tokenAddress: BSC_LSD_USDT_ADDRESS,
-        depositAddress: depositAddress,
-        chain: "bsc",
-        amount: amountIn,
+      // executes the actual BSC wallet transfer.
+      setWithdrawProgress({
+        status: "loading",
+        message: "Withdraw: waiting for wallet transfer confirmation...",
+      });
+      await transfer_evm({
+        tokenAddress: transferData.tokenAddress,
+        depositAddress: transferData.depositAddress,
+        chain: transferData.chain,
+        amount: transferData.amount,
       });
 
-      // Step5: Poll Intents status
-      const { status } = await pollingTransactionStatus(depositAddress);
+      // poll both Intents legs until the LSD withdraw route settles.
+      setWithdrawProgress({
+        status: "loading",
+        message: getBridgePollingProgressText({
+          action: "Withdraw",
+          originStatus: "polling",
+          returnStatus: "not_started",
+        }),
+      });
+      const originStatus = await pollLsdIntentsTransactionStatus({
+        depositAddress: intentsDepositAddresses.originDepositAddress,
+      });
 
-      if (status === "success") {
+      if (originStatus.status !== "success") {
+        throw new Error(
+          `Origin bridge status: ${originStatus.status}, return bridge status: not_started`
+        );
+      }
+
+      setWithdrawProgress({
+        status: "loading",
+        message: getBridgePollingProgressText({
+          action: "Withdraw",
+          originStatus: originStatus.status,
+          returnStatus: "polling",
+        }),
+      });
+      const returnStatus = await pollLsdIntentsTransactionStatus({
+        depositAddress: intentsDepositAddresses.returnDepositAddress,
+      });
+
+      if (returnStatus.status === "success") {
         console.log("Withdraw transaction completed successfully");
         await fetchBalances();
+        setWithdrawProgress({
+          status: "success",
+          message: `${getBridgePollingProgressText({
+            action: "Withdraw",
+            originStatus: originStatus.status,
+            returnStatus: returnStatus.status,
+          })}\nWithdraw completed. Balances refreshed.`,
+        });
       } else {
-        throw new Error(`Intents transaction status: ${status}`);
+        throw new Error(
+          `Origin bridge status: ${originStatus.status}, return bridge status: ${returnStatus.status}`
+        );
       }
     } catch (error) {
       const errorMessage =
         error instanceof Error ? error.message : String(error);
       console.error("Withdraw failed:", error);
+      setWithdrawProgress({
+        status: "error",
+        message: `Withdraw failed: ${formatErrorMessage(errorMessage)}`,
+      });
       failToast({ failText: formatErrorMessage(errorMessage) });
     } finally {
       setIsWithdrawing(false);
@@ -632,6 +589,7 @@ const LSDPage = () => {
             >
               {isSupplying ? "Supplying..." : "Supply"}
             </button>
+            {renderFlowProgress(supplyProgress)}
           </div>
         </div>
 
@@ -696,6 +654,7 @@ const LSDPage = () => {
             >
               {isWithdrawing ? "Withdrawing..." : "Withdraw"}
             </button>
+            {renderFlowProgress(withdrawProgress)}
           </div>
         </div>
       </div>
