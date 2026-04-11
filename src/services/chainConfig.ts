@@ -315,7 +315,7 @@ export const INTENTS_TOKENS: IIntentsTokens = {
   },
   NRUSDT: {
     near: {
-      assetId: "1cs_v1:near:nep141:lsd-usdt.rhealab.near",
+      assetId: "nep141:lsd-usdt.rhealab.near",
       decimals: 18,
       blockchain: "near",
       symbol: "nrUsdt",
