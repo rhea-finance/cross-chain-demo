@@ -25,6 +25,30 @@ import {
   sign_message,
 } from "@/utils/chainsUtil";
 
+export interface CreateMcaSignatureDebugInfo {
+  signingMessage: string;
+  signedMessage: string;
+  signatureAlias: string;
+  customRecipientMsg: string;
+}
+
+function getCreateMcaSignatureDebugInfo({
+  signingMessage,
+  signedMessage,
+  customRecipientMsg,
+}: {
+  signingMessage: string;
+  signedMessage: string;
+  customRecipientMsg: string;
+}): CreateMcaSignatureDebugInfo {
+  return {
+    signingMessage,
+    signedMessage,
+    signatureAlias: `a = "${signedMessage}"`,
+    customRecipientMsg,
+  };
+}
+
 export async function outChainToNearChainIntentsAction({
   chain,
   identityKey,
@@ -35,6 +59,7 @@ export async function outChainToNearChainIntentsAction({
   recipient,
   action,
   useAsCollateral,
+  onCreateMcaSignatureDebug,
 }: {
   chain: IChain;
   identityKey: string;
@@ -45,6 +70,7 @@ export async function outChainToNearChainIntentsAction({
   recipient: string;
   action: TokenAction | "Create" | "SupplyCreate";
   useAsCollateral?: boolean;
+  onCreateMcaSignatureDebug?: (data: CreateMcaSignatureDebugInfo) => void;
 }): Promise<IExecutionResult> {
   try {
     const { depositAddress, message } = await outChainToNearChainIntentsQuote({
@@ -57,6 +83,7 @@ export async function outChainToNearChainIntentsAction({
       recipient,
       action,
       useAsCollateral,
+      onCreateMcaSignatureDebug,
     });
 
     if (depositAddress) {
@@ -127,6 +154,7 @@ export async function outChainToNearChainIntentsQuote({
   recipient,
   action,
   useAsCollateral,
+  onCreateMcaSignatureDebug,
 }: {
   chain: IChain;
   identityKey: string;
@@ -137,6 +165,7 @@ export async function outChainToNearChainIntentsQuote({
   recipient: string;
   action: TokenAction | "Create" | "SupplyCreate";
   useAsCollateral?: boolean;
+  onCreateMcaSignatureDebug?: (data: CreateMcaSignatureDebugInfo) => void;
 }): Promise<IExecutionResult> {
   try {
     const w = format_wallet({
@@ -150,29 +179,45 @@ export async function outChainToNearChainIntentsQuote({
         useAsCollateral,
       });
     } else if (action == "SupplyCreate") {
+      const signingMessage = serializationObj([w]);
       const signedMessage = await sign_message({
         chain,
-        message: serializationObj([w]),
+        message: signingMessage,
       });
       customRecipientMsg = getCreateMcaCustomRecipientMsg({
         useAsCollateral,
         wallets: [w as any],
         signedMessages: [signedMessage],
       });
+      onCreateMcaSignatureDebug?.(
+        getCreateMcaSignatureDebugInfo({
+          signingMessage,
+          signedMessage,
+          customRecipientMsg,
+        })
+      );
     } else if (action == "Repay") {
       customRecipientMsg = getRepayCustomRecipientMsg({
         w: w as any,
       });
     } else if (action == "Create") {
+      const signingMessage = serializationObj([w]);
       const signedMessage = await sign_message({
         chain,
-        message: serializationObj([w]),
+        message: signingMessage,
       });
       customRecipientMsg = getCreateMcaCustomRecipientMsg({
         useAsCollateral: false,
         wallets: [w as any],
         signedMessages: [signedMessage],
       });
+      onCreateMcaSignatureDebug?.(
+        getCreateMcaSignatureDebugInfo({
+          signingMessage,
+          signedMessage,
+          customRecipientMsg,
+        })
+      );
     }
     const quoteResult = await intentsQuotationUi({
       chain,

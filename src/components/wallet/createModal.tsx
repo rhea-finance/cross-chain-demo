@@ -22,6 +22,52 @@ import { useUpdateTokenChainBalance } from "@/hooks/useChainsLendingBalance";
 import { ICreateFeeToken, IWalletData } from "@/interface/lending/chains";
 import { expandToken } from "@/utils/numbers";
 import { getChainTokenMetadataBySymbol } from "@/utils/chainsUtil";
+import type { CreateMcaSignatureDebugInfo } from "@/services/lending/actions/commonAction";
+
+function fallbackCopyText(value: string) {
+  const textarea = document.createElement("textarea");
+  textarea.value = value;
+  textarea.setAttribute("readonly", "true");
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  document.body.appendChild(textarea);
+  textarea.select();
+  document.execCommand("copy");
+  document.body.removeChild(textarea);
+}
+
+function copyText(value: string) {
+  if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(value).catch(() => {
+      fallbackCopyText(value);
+    });
+    return;
+  }
+
+  fallbackCopyText(value);
+}
+
+function DebugInfoBlock({ title, value }: { title: string; value: string }) {
+  return (
+    <div className="rounded-lg border border-gray-30 bg-white p-3">
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <div className="text-xs uppercase tracking-[0.2em] text-gray-50">
+          {title}
+        </div>
+        <button
+          type="button"
+          className="shrink-0 rounded-full border border-gray-30 px-3 py-1 text-xs uppercase tracking-[0.15em] text-gray-50"
+          onClick={() => copyText(value)}
+        >
+          Copy
+        </button>
+      </div>
+      <pre className="max-h-28 overflow-y-auto whitespace-pre-wrap break-all text-xs leading-5 text-black">
+        {value}
+      </pre>
+    </div>
+  );
+}
 
 export default function CreateModal({
   isOpen,
@@ -37,6 +83,9 @@ export default function CreateModal({
   const [selectedFeeTokenData, setSelectedFeeTokenData] =
     useState<ICreateFeeToken>();
   const [loading, setLoading] = useState<boolean>(false);
+  const [signatureDebugInfo, setSignatureDebugInfo] =
+    useState<CreateMcaSignatureDebugInfo | null>(null);
+  const [createError, setCreateError] = useState<string>("");
   const { fetchMcaAndWallets } = useFetchMcaAndWallets();
   const selectedEvmChain = chainAccountStore.getSelectedEvmChain();
   const { updateSimgleTokenChainBalance } = useUpdateTokenChainBalance();
@@ -81,55 +130,69 @@ export default function CreateModal({
   }, [symbolBalance, selectedFeeTokenData?.totalFeeAmoutRead]);
   async function doCreate() {
     setLoading(true);
-    const total_amount_read = selectedFeeTokenData?.totalFeeAmoutRead || "0";
-    const { decimal } = getChainTokenMetadataBySymbol({
-      chain: createData.chain,
-      subChain: selectedEvmChain,
-      symbol: selectedFeeTokenData.metadata.symbol,
-    });
-    const { status, message, depositAddress } = await createMCA({
-      symbol: selectedFeeTokenData?.metadata?.symbol,
-      selectedEvmChain,
-      chain: createData.chain,
-      identityKey: createData.identityKey,
-      amount: expandToken(total_amount_read, decimal),
-      outChainAccountId: createData.accountId,
-    });
-    if (status == "success") {
-      dispatch(
-        showIntentsModal({
-          status: "pending",
-          chain: createData.chain,
-          selectedEvmChain,
-        })
-      );
-      const { status: bridge_status } = await pollingTransactionStatus(
-        depositAddress
-      );
-      dispatch(
-        showIntentsModal({
-          status: bridge_status == "success" ? "success" : "error",
-          chain: createData.chain,
-          selectedEvmChain,
-        })
-      );
-      fetchMcaAndWallets({
-        chain: createData.chain,
-        identityKey: createData.identityKey,
-      });
-      updateSimgleTokenChainBalance({
+    setSignatureDebugInfo(null);
+    setCreateError("");
+    try {
+      const total_amount_read = selectedFeeTokenData?.totalFeeAmoutRead || "0";
+      const { decimal } = getChainTokenMetadataBySymbol({
         chain: createData.chain,
         subChain: selectedEvmChain,
-        symbol: selectedFeeTokenData?.metadata?.symbol,
+        symbol: selectedFeeTokenData.metadata.symbol,
       });
-    } else if (status == "error") {
+      const { status, message, depositAddress } = await createMCA({
+        symbol: selectedFeeTokenData?.metadata?.symbol,
+        selectedEvmChain,
+        chain: createData.chain,
+        identityKey: createData.identityKey,
+        amount: expandToken(total_amount_read, decimal),
+        outChainAccountId: createData.accountId,
+        onSignatureDebug: setSignatureDebugInfo,
+      });
+      if (status == "success") {
+        dispatch(
+          showIntentsModal({
+            status: "pending",
+            chain: createData.chain,
+            selectedEvmChain,
+          })
+        );
+        const { status: bridge_status } = await pollingTransactionStatus(
+          depositAddress
+        );
+        dispatch(
+          showIntentsModal({
+            status: bridge_status == "success" ? "success" : "error",
+            chain: createData.chain,
+            selectedEvmChain,
+          })
+        );
+        fetchMcaAndWallets({
+          chain: createData.chain,
+          identityKey: createData.identityKey,
+        });
+        updateSimgleTokenChainBalance({
+          chain: createData.chain,
+          subChain: selectedEvmChain,
+          symbol: selectedFeeTokenData?.metadata?.symbol,
+        });
+        onRequestClose();
+      } else if (status == "error") {
+        setCreateError(message || "Create failed");
+        failToast({
+          failText: message,
+          noAutoClose: true,
+        });
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setCreateError(message);
       failToast({
         failText: message,
         noAutoClose: true,
       });
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
-    onRequestClose();
   }
   return (
     <DefaultModal
@@ -141,7 +204,7 @@ export default function CreateModal({
         },
       }}
     >
-      <div className="flex flex-col items-center rounded-[20px] border border-gray-30 p-8 bg-white lg:w-[438px] max-sm:w-[98vw]">
+      <div className="flex max-h-[90vh] flex-col items-center overflow-y-auto rounded-[20px] border border-gray-30 p-8 bg-white lg:w-[438px] max-sm:w-[98vw]">
         <span className="text-2xl text-b-10 paceGrotesk-Bold">
           Create Cross-chain Account
         </span>
@@ -181,6 +244,37 @@ export default function CreateModal({
             selectedFeeTokenData={selectedFeeTokenData}
           />
         </div>
+
+        {(signatureDebugInfo || createError) && (
+          <div className="mt-4 flex w-full flex-col gap-3 rounded-xl bg-gray-80 p-4">
+            <div className="text-sm font-semibold text-black">
+              Create Signature Debug
+            </div>
+            {createError && (
+              <DebugInfoBlock title="Error Message" value={createError} />
+            )}
+            {signatureDebugInfo && (
+              <>
+                <DebugInfoBlock
+                  title="Signing Message"
+                  value={signatureDebugInfo.signingMessage}
+                />
+                <DebugInfoBlock
+                  title="Signature Result"
+                  value={signatureDebugInfo.signedMessage}
+                />
+                <DebugInfoBlock
+                  title="Signature Alias"
+                  value={signatureDebugInfo.signatureAlias}
+                />
+                <DebugInfoBlock
+                  title="Intent customRecipientMsg"
+                  value={signatureDebugInfo.customRecipientMsg}
+                />
+              </>
+            )}
+          </div>
+        )}
 
         {/* tip  */}
         <div className="flex items-start w-full mt-10 mb-2">

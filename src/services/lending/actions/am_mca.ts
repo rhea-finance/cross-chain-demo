@@ -13,6 +13,7 @@ import {
 } from "@rhea-finance/cross-chain-sdk";
 import { sign_message } from "@/utils/chainsUtil";
 import { outChainToNearChainIntentsAction } from "./commonAction";
+import type { CreateMcaSignatureDebugInfo } from "./commonAction";
 import { formatErrorMessage } from "@/utils/chainsUtil";
 /**
  *  contract receive user's token
@@ -25,6 +26,7 @@ export async function createMCA({
   identityKey,
   outChainAccountId,
   selectedEvmChain,
+  onSignatureDebug,
 }: {
   symbol: string;
   amount: string;
@@ -32,6 +34,7 @@ export async function createMCA({
   identityKey: string;
   outChainAccountId: string;
   selectedEvmChain?: string;
+  onSignatureDebug?: (data: CreateMcaSignatureDebugInfo) => void;
 }): Promise<IExecutionResult> {
   const res = await outChainToNearChainIntentsAction({
     chain,
@@ -42,6 +45,7 @@ export async function createMCA({
     outChainAccountId,
     recipient: config_near.AM_CONTRACT,
     action: "Create",
+    onCreateMcaSignatureDebug: onSignatureDebug,
   });
   return res;
 }

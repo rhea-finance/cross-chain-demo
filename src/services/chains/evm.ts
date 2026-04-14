@@ -230,7 +230,10 @@ export async function get_batch_balances_evm({
 }): Promise<Record<string, IIntentItem>> {
   let map = {};
   try {
-    const rpcUrl = config_evm.chains[chain].rpcUrl;
+    let rpcUrl = config_evm.chains[chain].rpcUrl;
+    if (chain.toLowerCase() == "bsc") {
+      rpcUrl = "https://bsc.api.pocket.network";
+    }
     const provider = new ethers.providers.JsonRpcProvider(rpcUrl);
     const batchContractAddress = CONTRACT_BATCH_QUERY_MAP[chain];
     const [normalTokens, nativeToken] = tokens.reduce(
@@ -309,6 +312,11 @@ export async function get_batch_balances_evm({
       }, {});
     }
   } catch (error) {
+    debugger;
+    console.error(
+      `----------${chain}-get_batch_balances_evm-error------------`,
+      error
+    );
     // rpc error
     map = tokens.reduce((acc, cur) => {
       acc[cur.assetId] = {

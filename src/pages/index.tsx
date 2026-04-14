@@ -389,7 +389,7 @@ const Lending = () => {
   return (
     <div className="relative">
       <LendingPage />
-      <div className="fixed bottom-6 right-6 z-20 h-[70vh] w-[360px] max-w-[calc(100vw-32px)] overflow-y-auto rounded-3xl border border-[#d8dee5] bg-white/95 p-5 shadow-[0_20px_60px_rgba(15,23,42,0.16)] backdrop-blur">
+      <div className="hidden fixed bottom-6 right-6 z-20 h-[70vh] w-[360px] max-w-[calc(100vw-32px)] overflow-y-auto rounded-3xl border border-[#d8dee5] bg-white/95 p-5 shadow-[0_20px_60px_rgba(15,23,42,0.16)] backdrop-blur">
         <div className="text-sm font-semibold uppercase tracking-[0.12em] text-gray-50">
           Base personal_sign
         </div>
