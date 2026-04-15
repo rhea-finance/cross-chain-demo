@@ -116,11 +116,13 @@ const LSDPage = () => {
 
   // Auto switch to BSC chain when EVM wallet is connected
   useEffect(() => {
-    if (evm.isSignedIn) {
-      // Switch to BSC chain
+    if (
+      evm.isSignedIn &&
+      evm.connectedChainData?.id?.toLowerCase() !== BSC_CHAIN_ID.toLowerCase()
+    ) {
       evm.setChain(BSC_CHAIN_ID);
     }
-  }, [evm.isSignedIn]);
+  }, [evm.isSignedIn, evm.connectedChainData?.id]);
 
   // Fetch balances function
   const fetchBalances = useCallback(async () => {
