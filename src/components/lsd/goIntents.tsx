@@ -1,12 +1,17 @@
+import Big from "big.js";
 import React, { useState, useEffect, useCallback } from "react";
 import { Icon } from "@iconify/react";
 import useWalletConnect from "@/hooks/useWalletConnect";
 import { Img } from "@/components/common/img";
+import { DefaultToolTip } from "@/components/common/toolTip";
 import { formatErrorMessage, getAccountIdUi } from "@/utils/chainsUtil";
 import { EVM_CHAINS } from "@/services/chainConfig";
 import {
   BSC_CHAIN_ID,
+  BSC_NRUSDT_INTENTS_ASSET_ID,
+  BSC_USDT_INTENTS_ASSET_ID,
   getLsdBalances,
+  getLsdIntentsOrderHistory,
   pollLsdIntentsTransactionStatus,
   prepareLsdSupplyByIntents,
   prepareLsdWithdrawByIntents,
@@ -23,6 +28,17 @@ type FlowProgress = {
 };
 
 type IntentsBridgeStatus = "not_started" | "polling" | "success" | string;
+
+type LsdHistoryRow = {
+  action: "Supply" | "Withdraw";
+  wallet: string;
+  token: "USDT" | "nrUsdt";
+  amount: string;
+  feeUsd: string;
+  status: string;
+  time: string;
+  depositAddress: string;
+};
 
 const getPrepareStageProgressText = (
   action: "Supply" | "Withdraw",
@@ -85,6 +101,28 @@ const renderFlowProgress = (progress: FlowProgress | null) => {
   );
 };
 
+const formatHistoryTime = (timestamp?: string) => {
+  if (!timestamp) return "-";
+
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) {
+    return timestamp;
+  }
+
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(
+    date.getDate()
+  )} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+};
+
+const getActionTooltipText = (action: "Supply" | "Withdraw") => {
+  if (action === "Supply") {
+    return "Bridge USDT into the Lending to receive nrUsdt on BSC.";
+  }
+
+  return "Bridge nrUsdt into the Lending to receive USDT back on BSC.";
+};
+
 const LSDPage = () => {
   const { evm } = useWalletConnect();
   const [supplyAmount, setSupplyAmount] = useState("0");
@@ -112,6 +150,9 @@ const LSDPage = () => {
   const [withdrawProgress, setWithdrawProgress] = useState<FlowProgress | null>(
     null
   );
+  const [historyRows, setHistoryRows] = useState<LsdHistoryRow[]>([]);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const [isHistoryLoading, setIsHistoryLoading] = useState(false);
   const bscAccountId = evm.accountId;
 
   // Auto switch to BSC chain when EVM wallet is connected
@@ -148,6 +189,64 @@ const LSDPage = () => {
     }
   }, [evm.accountId]);
 
+  const fetchHistory = useCallback(async () => {
+    const accountId = evm.accountId;
+
+    if (!accountId) {
+      setHistoryRows([]);
+      setHistoryError(null);
+      setIsHistoryLoading(false);
+      return;
+    }
+
+    try {
+      setIsHistoryLoading(true);
+      setHistoryError(null);
+      const response = await getLsdIntentsOrderHistory({
+        accountId,
+        pageSize: 10,
+      });
+
+      const rows = response.record_list
+        .map((record) => {
+          const action =
+            record.quoteRequest.originAsset === BSC_USDT_INTENTS_ASSET_ID
+              ? "Supply"
+              : record.quoteRequest.originAsset === BSC_NRUSDT_INTENTS_ASSET_ID
+              ? "Withdraw"
+              : null;
+
+          if (!action || !record.quote?.depositAddress) {
+            return null;
+          }
+
+          return {
+            action,
+            wallet: record.quoteRequest.refundTo || accountId,
+            token: action === "Supply" ? "USDT" : "nrUsdt",
+            amount: record.quote.amountInFormatted || "0",
+            feeUsd: new Big(record.quote.amountInUsd || 0)
+              .minus(record.quote.amountOutUsd || 0)
+              .toFixed(),
+            status: record.status || "-",
+            time: formatHistoryTime(record.timestamp),
+            depositAddress: record.quote.depositAddress,
+          };
+        })
+        .filter((row): row is LsdHistoryRow => !!row);
+
+      setHistoryRows(rows);
+    } catch (error) {
+      console.error("Failed to fetch LSD history:", error);
+      setHistoryRows([]);
+      setHistoryError(
+        error instanceof Error ? error.message : "Failed to fetch history"
+      );
+    } finally {
+      setIsHistoryLoading(false);
+    }
+  }, [evm.accountId]);
+
   // Auto fetch balances
   useEffect(() => {
     if (!bscAccountId) {
@@ -161,6 +260,19 @@ const LSDPage = () => {
     const interval = setInterval(fetchBalances, 10000);
     return () => clearInterval(interval);
   }, [bscAccountId, fetchBalances]);
+
+  useEffect(() => {
+    if (!bscAccountId) {
+      setHistoryRows([]);
+      setHistoryError(null);
+      setIsHistoryLoading(false);
+      return;
+    }
+
+    fetchHistory();
+    const interval = setInterval(fetchHistory, 15000);
+    return () => clearInterval(interval);
+  }, [bscAccountId, fetchHistory]);
 
   // Try to get Intents quote for supply amount
   useEffect(() => {
@@ -329,6 +441,7 @@ const LSDPage = () => {
         console.log("Supply transaction completed successfully");
         // Refresh balances
         await fetchBalances();
+        await fetchHistory();
         setSupplyProgress({
           status: "success",
           message: `${getBridgePollingProgressText({
@@ -451,6 +564,7 @@ const LSDPage = () => {
       if (returnStatus.status === "success") {
         console.log("Withdraw transaction completed successfully");
         await fetchBalances();
+        await fetchHistory();
         setWithdrawProgress({
           status: "success",
           message: `${getBridgePollingProgressText({
@@ -658,6 +772,128 @@ const LSDPage = () => {
             </button>
             {renderFlowProgress(withdrawProgress)}
           </div>
+        </div>
+
+        <div className="bg-white rounded-2xl p-6 mt-6 border border-gray-30">
+          <div className="flex items-center justify-between mb-4 gap-4">
+            <h2 className="text-lg font-semibold text-left">History</h2>
+            {isHistoryLoading && (
+              <Icon
+                icon="svg-spinners:ring-resize"
+                className="w-4 h-4 animate-spin text-gray-50"
+              />
+            )}
+          </div>
+
+          {!bscAccountId && (
+            <div className="text-sm text-gray-50">
+              Connect your BSC wallet to view LSD history.
+            </div>
+          )}
+
+          {bscAccountId && historyError && (
+            <div className="text-sm text-red-500">{historyError}</div>
+          )}
+
+          {bscAccountId &&
+            !historyError &&
+            historyRows.length === 0 &&
+            !isHistoryLoading && (
+              <div className="text-sm text-gray-50">No LSD history found.</div>
+            )}
+
+          {bscAccountId && historyRows.length > 0 && (
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[780px] table-auto border-separate border-spacing-0 text-sm">
+                <thead>
+                  <tr className="text-gray-50">
+                    <th className="px-2 py-3 text-left font-normal border-b border-gray-30 whitespace-nowrap">
+                      Action
+                    </th>
+                    <th className="px-2 py-3 text-left font-normal border-b border-gray-30 whitespace-nowrap">
+                      Wallet
+                    </th>
+                    <th className="px-2 py-3 text-left font-normal border-b border-gray-30 whitespace-nowrap">
+                      Token
+                    </th>
+                    <th className="px-2 py-3 text-left font-normal border-b border-gray-30 whitespace-nowrap">
+                      Amount
+                    </th>
+                    <th className="px-2 py-3 text-left font-normal border-b border-gray-30 whitespace-nowrap">
+                      Fee
+                    </th>
+                    <th className="px-2 py-3 text-left font-normal border-b border-gray-30 whitespace-nowrap">
+                      Status
+                    </th>
+                    <th className="px-2 py-3 text-left font-normal border-b border-gray-30 whitespace-nowrap">
+                      Time
+                    </th>
+                  </tr>
+                </thead>
+
+                <tbody>
+                  {historyRows.map((row) => (
+                    <tr
+                      key={`${row.depositAddress}-${row.time}`}
+                      className="text-black"
+                    >
+                      <td className="px-2 py-4 border-b border-gray-30 whitespace-nowrap">
+                        <div className="font-medium inline-flex items-center gap-1.5">
+                          <span>{row.action}</span>
+                          <DefaultToolTip
+                            tip={getActionTooltipText(row.action)}
+                            className="inline-flex items-center"
+                          >
+                            <span className="inline-flex items-center text-gray-50 hover:text-black transition-colors">
+                              <Icon
+                                icon="akar-icons:question"
+                                className="w-4 h-4"
+                              />
+                            </span>
+                          </DefaultToolTip>
+                        </div>
+                      </td>
+                      <td className="px-2 py-4 border-b border-gray-30 font-mono whitespace-nowrap">
+                        {getAccountIdUi(row.wallet)}
+                      </td>
+                      <td className="px-2 py-4 border-b border-gray-30 whitespace-nowrap">
+                        {row.token}
+                      </td>
+                      <td className="px-2 py-4 border-b border-gray-30 whitespace-nowrap">
+                        {row.amount}
+                      </td>
+                      <td className="px-2 py-4 border-b border-gray-30 whitespace-nowrap">
+                        {beautifyNumber({
+                          num: row.feeUsd,
+                          isUsd: true,
+                        }) ?? "-"}
+                      </td>
+                      <td className="px-2 py-4 border-b border-gray-30 whitespace-nowrap">
+                        {row.status}
+                      </td>
+                      <td className="px-2 py-4 border-b border-gray-30 whitespace-nowrap">
+                        <div className="inline-flex items-center gap-1.5">
+                          <span>{row.time}</span>
+                          <a
+                            href={`https://1click.chaindefuser.com/v0/status?depositAddress=${row.depositAddress}`}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex items-center justify-center text-black hover:text-green-10 transition-colors"
+                            aria-label={`Open order status for ${row.depositAddress}`}
+                          >
+                            <Icon
+                              icon="mdi:arrow-top-right"
+                              className="w-5 h-5"
+                            />
+                          </a>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       </div>
     </div>

@@ -24,8 +24,8 @@ importers:
         specifier: 2.8.2
         version: 2.8.2(react-redux@9.2.0(@types/react@19.2.7)(react@19.2.0)(redux@5.0.1))(react@19.2.0)
       '@rhea-finance/cross-chain-sdk':
-        specifier: 0.1.13
-        version: 0.1.13(@types/react@19.2.7)(bufferutil@4.0.9)(fastestsmallesttextencoderdecoder@1.0.22)(react-dom@19.2.0(react@19.2.0))(react@19.2.0)(typescript@5.9.3)(utf-8-validate@5.0.10)(zod@4.3.6)
+        specifier: 0.1.14
+        version: 0.1.14(@types/react@19.2.7)(bufferutil@4.0.9)(fastestsmallesttextencoderdecoder@1.0.22)(react-dom@19.2.0(react@19.2.0))(react@19.2.0)(typescript@5.9.3)(utf-8-validate@5.0.10)(zod@4.3.6)
       '@sentry/react':
         specifier: 9.38.0
         version: 9.38.0(react@19.2.0)
@@ -3246,8 +3246,8 @@ packages:
   '@reown/appkit@1.8.11':
     resolution: {integrity: sha512-G96zt1P3ASrivV7HRrFQuzkCEzSmy3ca7cSQxaLeIS+P2VVhjE5YAyINArGVbooY0heHCPvQuTNM+YgK4oBmfg==}
 
-  '@rhea-finance/cross-chain-sdk@0.1.13':
-    resolution: {integrity: sha512-aJhjhrgEk1szeDqBVPmq2C66uuc5KySk4uLYP6AlmSWuKwnNU1VZ6nzwJ1yBzhu53wGc5ZNveBZ6JkROWGNyZw==}
+  '@rhea-finance/cross-chain-sdk@0.1.14':
+    resolution: {integrity: sha512-hEzmXX9l5+ZxS8pwf4NyYI4UhvMd+AQ8Fc410GrxFGmqq0OHestagxLAcQnohDdOMfjbZd9s8ULgXUYEv7wawg==}
 
   '@rollup/plugin-replace@5.0.7':
     resolution: {integrity: sha512-PqxSfuorkHz/SPpyngLyg5GCEkOcee9M1bkxiVDr41Pd61mqP1PLOoDPbpl44SB2mQGKwV/In74gqQmGITOhEQ==}
@@ -15412,7 +15412,7 @@ snapshots:
       - utf-8-validate
       - zod
 
-  '@rhea-finance/cross-chain-sdk@0.1.13(@types/react@19.2.7)(bufferutil@4.0.9)(fastestsmallesttextencoderdecoder@1.0.22)(react-dom@19.2.0(react@19.2.0))(react@19.2.0)(typescript@5.9.3)(utf-8-validate@5.0.10)(zod@4.3.6)':
+  '@rhea-finance/cross-chain-sdk@0.1.14(@types/react@19.2.7)(bufferutil@4.0.9)(fastestsmallesttextencoderdecoder@1.0.22)(react-dom@19.2.0(react@19.2.0))(react@19.2.0)(typescript@5.9.3)(utf-8-validate@5.0.10)(zod@4.3.6)':
     dependencies:
       '@solana/spl-token': 0.4.13(@solana/web3.js@1.98.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(bufferutil@4.0.9)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)(utf-8-validate@5.0.10)
       '@solana/web3.js': 1.98.0(bufferutil@4.0.9)(utf-8-validate@5.0.10)
